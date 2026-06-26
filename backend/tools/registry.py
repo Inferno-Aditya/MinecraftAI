@@ -6,6 +6,20 @@ from .load_location import LoadLocationTool
 from .list_locations import ListLocationsTool
 from .save_note import SaveNoteTool
 
+# Phase 4A perception tools
+from .get_player_status import GetPlayerStatusTool
+from .get_held_item import GetHeldItemTool
+from .get_equipment import GetEquipmentTool
+from .get_inventory import GetInventoryTool
+from .get_weather import GetWeatherTool
+from .get_time import GetTimeTool
+from .get_light_level import GetLightLevelTool
+from .get_nearby_blocks import GetNearbyBlocksTool
+from .scan_area import ScanAreaTool
+from .find_nearest import FindNearestTool
+from .get_nearby_entities import GetNearbyEntitiesTool
+from .get_biome import GetBiomeTool
+
 try:
     from context import PlayerContext
 except ImportError:
@@ -71,9 +85,25 @@ class ToolRegistry:
                 "message": f"Execution error in tool '{tool_name}': {str(e)}"
             }
 
-# Instantiate global registry and register Phase 2 tools
+# Instantiate global registry and register Phase 2 & Phase 4A tools
 registry = ToolRegistry()
+
+# Phase 2 Memory Tools
 registry.register(SaveLocationTool())
 registry.register(LoadLocationTool())
 registry.register(ListLocationsTool())
 registry.register(SaveNoteTool())
+
+# Phase 4A Environment Perception Tools
+registry.register(GetPlayerStatusTool())
+registry.register(GetHeldItemTool())
+registry.register(GetEquipmentTool())
+registry.register(GetInventoryTool())
+registry.register(GetWeatherTool())
+registry.register(GetTimeTool())
+registry.register(GetLightLevelTool())
+registry.register(GetNearbyBlocksTool())
+registry.register(ScanAreaTool())
+registry.register(FindNearestTool())
+registry.register(GetNearbyEntitiesTool())
+registry.register(GetBiomeTool())

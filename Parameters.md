@@ -141,7 +141,15 @@ Phase 2: - Persistent memory - Tool execution
 
 Phase 3: - Place blocks - Build structures - Inventory awareness
 
-Phase 4: - Generate datapacks - Custom items - Custom mobs
+### Phase 4A – Environment Awareness & World Perception
+
+The AI assistant gains the ability to observe, inspect, and reason about the Minecraft world without modifying it. This phase focuses entirely on collecting information through read-only tools so the assistant can make informed decisions before taking actions in later phases. The AI should be able to query nearby blocks, entities, inventory contents, held items, equipped armor, player status, weather, world time, light levels, and scan surrounding areas. Example capabilities include answering questions such as "What resources are around me?", "Do I have enough wood to build a house?", "Are there any hostile mobs nearby?", or "Where is the nearest village?". No tool introduced in this phase may alter the game world, execute commands, place blocks, or change player state. The objective is to establish complete environmental awareness and contextual reasoning while maintaining a strictly read-only interaction model.
+
+
+### Phase 4B – World Interaction & Intelligent Actions
+
+Building upon the environmental awareness developed in Phase 4A, the AI assistant gains the ability to safely interact with and modify the Minecraft world through validated tools. This includes placing and breaking blocks, filling or replacing regions, executing approved Minecraft commands, summoning entities, generating structures, laying foundations, interacting with inventories, and performing other controlled world modifications. All actions must be executed through the existing Tool Registry with strict argument validation, safety checks, logging, and error handling—never through arbitrary code execution. The AI should reason about the current environment before acting, enabling natural requests such as "Lay down a 10×10 stone foundation here", "Summon a zombie wearing diamond armor", "Place a diamond ore vein beneath me", or "Build the outline of a small wooden house." This phase marks the transition from an intelligent observer to an intelligent actor while preserving the project's modular architecture, safety-first design, and provider-independent planning system.
+
 
 Phase 5: - AI-assisted mod generation - Multi-agent architecture -
 Natural language world editing
