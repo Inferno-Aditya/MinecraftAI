@@ -11,9 +11,14 @@ except ImportError:
     from .context import PlayerContext
 
 try:
-    from planner import plan, ToolCall, PlannerResult
+    from planner import plan, ToolCall, PlannerResult, ResponseStrategy
 except ImportError:
-    from .planner import plan, ToolCall, PlannerResult
+    from .planner import plan, ToolCall, PlannerResult, ResponseStrategy
+
+try:
+    from response_generator import ResponseGenerator
+except ImportError:
+    from .response_generator import ResponseGenerator
 
 try:
     from tools import registry
@@ -75,6 +80,7 @@ async def chat_endpoint(request: ChatRequest):
         )
     
     # 2. Execution Engine
+    generator = ResponseGenerator()
     if planned_result.tool_calls:
         # Execute every ToolCall in order
         replies = []
@@ -103,14 +109,28 @@ async def chat_endpoint(request: ChatRequest):
             replies.append(result["message"])
             
         combined_reply = "\n".join(replies)
+        final_reply = generator.generate_response(
+            planned_result.response_strategy,
+            message,
+            player,
+            combined_reply,
+            planned_result.reply
+        )
         return ChatResponse(
-            reply=combined_reply,
+            reply=final_reply,
             tool_calls=planned_result.tool_calls
         )
 
     # 3. Conversational Response
+    final_reply = generator.generate_response(
+        planned_result.response_strategy,
+        message,
+        player,
+        "",
+        planned_result.reply
+    )
     return ChatResponse(
-        reply=planned_result.reply,
+        reply=final_reply,
         tool_calls=[]
     )
 

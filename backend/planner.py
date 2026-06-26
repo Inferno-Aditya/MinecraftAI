@@ -3,6 +3,7 @@ import json
 import datetime
 from pydantic import BaseModel, Field
 from typing import List
+from enum import Enum
 
 try:
     from context import PlayerContext
@@ -25,6 +26,12 @@ except ImportError:
     from .memory import get_memory_summary
 
 
+class ResponseStrategy(str, Enum):
+    KNOWLEDGE = "KNOWLEDGE"
+    TOOLS = "TOOLS"
+    HYBRID = "HYBRID"
+
+
 class ToolCall(BaseModel):
     """
     Model representing a planned tool execution call.
@@ -40,6 +47,10 @@ class PlannerResult(BaseModel):
     """
     reply: str = Field(default="", description="Conversational reply when no tools are planned.")
     tool_calls: List[ToolCall] = Field(default_factory=list, description="List of tool calls to execute.")
+    response_strategy: ResponseStrategy = Field(
+        default=ResponseStrategy.TOOLS,
+        description="The strategy to handle this query (KNOWLEDGE, TOOLS, or HYBRID)."
+    )
 
     # Backwards compatibility methods to allow treating PlannerResult as a list of ToolCalls
     def __len__(self) -> int:
@@ -98,14 +109,14 @@ def build_system_prompt() -> str:
     """
     tool_defs = get_tool_definitions()
     system_prompt = (
-        "You are the planning engine for an AI Minecraft assistant.\n"
-        "Your responsibility is ONLY to determine which tools should be executed.\n"
-        "You never execute tools yourself.\n"
+        "You are both a Minecraft expert and a planning engine for an AI Minecraft assistant.\n"
+        "Your role is to classify every user query into one of three response strategies and plan tool calls if necessary.\n"
         "Only return valid JSON.\n"
-        "Never answer in natural language unless no tool is required.\n\n"
+        "Never refuse a question or say you are 'only a planning engine'. Answer knowledge questions directly using your extensive Minecraft expertise.\n\n"
         "Response JSON Schema:\n"
         "{\n"
-        "  \"reply\": \"conversational message to the player if no tool is executed\",\n"
+        "  \"response_strategy\": \"KNOWLEDGE | TOOLS | HYBRID\",\n"
+        "  \"reply\": \"conversational message to the player (required for KNOWLEDGE; empty string for TOOLS and HYBRID)\",\n"
         "  \"tool_calls\": [\n"
         "    {\n"
         "      \"tool\": \"tool_name\",\n"
@@ -114,11 +125,37 @@ def build_system_prompt() -> str:
         "  ]\n"
         "}\n\n"
         "Instructions:\n"
-        "1. If the user's message matches the intent of one or more available tools, populate 'tool_calls' in order of execution. Set 'reply' to an empty string (\"\").\n"
-        "2. If no tool is required (e.g., player is just chatting, asking a question, or telling a joke), populate 'reply' with a conversational response, and set 'tool_calls' to an empty list [].\n"
-        "3. Never mix both. If 'tool_calls' contains elements, 'reply' must be empty (\"\").\n"
-        "4. Do not invent tools. Only use tools listed in the 'Available Tools' section.\n"
-        "5. Validate that the arguments match the schema of the tool exactly.\n\n"
+        "1. Classify the user query into one of these strategies:\n"
+        "   - \"KNOWLEDGE\": The question can be answered entirely using your Minecraft knowledge (e.g., combat mechanics, critical hits, crafting recipes, redstone, brewing, enchantments, game rules, updates). Set 'tool_calls' to [] and write the full expert answer directly in the 'reply' field.\n"
+        "   - \"TOOLS\": The question is a direct query about the player's current world state (e.g., coordinates, health, inventory lookup, searching blocks/entities). Set 'tool_calls' to the required tool(s) in order of execution, set 'reply' to \"\", and set 'response_strategy' to \"TOOLS\".\n"
+        "   - \"HYBRID\": The question requires both current game context and Minecraft knowledge synthesis (e.g., 'Can I craft a shield?', 'Can I survive the night?', 'Is my sword worth enchanting?'). Set 'tool_calls' to the required tool(s) to gather current state, set 'reply' to \"\", and set 'response_strategy' to \"HYBRID\".\n"
+        "2. Do not invent tools. Only use tools listed in the 'Available Tools' section.\n"
+        "3. Validate that arguments match the tool's schema exactly.\n\n"
+        "Classification Examples:\n"
+        "Example 1 (KNOWLEDGE):\n"
+        "  User: 'How do critical hits work?'\n"
+        "  JSON:\n"
+        "  {\n"
+        "    \"response_strategy\": \"KNOWLEDGE\",\n"
+        "    \"reply\": \"Critical hits are dealt when a player attacks while falling. They deal 150% of the weapon's base damage...\",\n"
+        "    \"tool_calls\": []\n"
+        "  }\n\n"
+        "Example 2 (TOOLS):\n"
+        "  User: 'What biome am I in?'\n"
+        "  JSON:\n"
+        "  {\n"
+        "    \"response_strategy\": \"TOOLS\",\n"
+        "    \"reply\": \"\",\n"
+        "    \"tool_calls\": [{\"tool\": \"get_biome\", \"arguments\": {}}]\n"
+        "  }\n\n"
+        "Example 3 (HYBRID):\n"
+        "  User: 'Can I craft a shield?'\n"
+        "  JSON:\n"
+        "  {\n"
+        "    \"response_strategy\": \"HYBRID\",\n"
+        "    \"reply\": \"\",\n"
+        "    \"tool_calls\": [{\"tool\": \"get_inventory\", \"arguments\": {}}]\n"
+        "  }\n\n"
         "Available Tools:\n"
         f"{tool_defs}"
     )
@@ -187,6 +224,20 @@ def parse_and_validate(cleaned_text: str) -> PlannerResult:
     if not isinstance(tool_calls_raw, list):
         raise ValueError("field 'tool_calls' must be a list.")
 
+    response_strategy_str = data.get("response_strategy", None)
+    if response_strategy_str is None:
+        if tool_calls_raw:
+            response_strategy = ResponseStrategy.TOOLS
+        else:
+            response_strategy = ResponseStrategy.KNOWLEDGE
+    else:
+        if not isinstance(response_strategy_str, str):
+            raise ValueError("field 'response_strategy' must be a string.")
+        try:
+            response_strategy = ResponseStrategy(response_strategy_str.upper())
+        except ValueError:
+            raise ValueError(f"field 'response_strategy' must be one of: KNOWLEDGE, TOOLS, HYBRID. Got: '{response_strategy_str}'")
+
     validated_calls = []
     try:
         from tools.registry import registry
@@ -220,7 +271,7 @@ def parse_and_validate(cleaned_text: str) -> PlannerResult:
 
         validated_calls.append(ToolCall(tool=tool_name, arguments=arguments))
 
-    return PlannerResult(reply=reply, tool_calls=validated_calls)
+    return PlannerResult(reply=reply, tool_calls=validated_calls, response_strategy=response_strategy)
 
 
 def plan(message: str, player_context: PlayerContext) -> PlannerResult:

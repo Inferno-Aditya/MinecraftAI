@@ -9,7 +9,10 @@ from context import (
 )
 from tools.registry import registry
 from tools.helpers import get_blocks_in_radius, get_entities_in_radius, calculate_direction
-from planner import plan, get_tool_definitions
+from planner import plan, get_tool_definitions, ResponseStrategy
+from response_generator import ResponseGenerator
+from main import app
+from fastapi.testclient import TestClient
 
 class TestPhase4A(unittest.TestCase):
     def setUp(self):
@@ -106,8 +109,17 @@ class TestPhase4A(unittest.TestCase):
         })
         self.config_patcher.start()
 
+        # Patch config for response generator tests
+        self.rg_config_patcher = patch("response_generator.load_config", return_value={
+            "provider": "mock",
+            "model": "mock-model",
+            "enable_prompt_logging": False
+        })
+        self.rg_config_patcher.start()
+
     def tearDown(self):
         self.config_patcher.stop()
+        self.rg_config_patcher.stop()
 
     def test_backward_compatibility_flat_context(self):
         """Verify that PlayerContext model validator correctly parses flat Phase 3 context."""
@@ -374,6 +386,102 @@ class TestPhase4A(unittest.TestCase):
         self.assertEqual(len(res.tool_calls), 1)
         self.assertEqual(res.tool_calls[0].tool, "find_nearest")
         self.assertEqual(res.tool_calls[0].arguments["target_type"], "water")
+
+    def test_response_strategy_enum(self):
+        """Verify the ResponseStrategy enum values are correct."""
+        self.assertEqual(ResponseStrategy.KNOWLEDGE, "KNOWLEDGE")
+        self.assertEqual(ResponseStrategy.TOOLS, "TOOLS")
+        self.assertEqual(ResponseStrategy.HYBRID, "HYBRID")
+
+    def test_knowledge_only_intents(self):
+        """Verify that knowledge-only questions deal with KNOWLEDGE strategy and don't make tool calls."""
+        queries = [
+            "How do critical hits work?",
+            "What is the strongest weapon?",
+            "How do villagers breed?",
+            "How does Fortune work?",
+            "How do Nether portals work?"
+        ]
+        for query in queries:
+            res = plan(query, self.context)
+            self.assertEqual(res.response_strategy, ResponseStrategy.KNOWLEDGE)
+            self.assertEqual(len(res.tool_calls), 0)
+            self.assertTrue(len(res.reply) > 0)
+            self.assertNotIn("I am only a planning engine", res.reply)
+
+    def test_tool_required_intents(self):
+        """Verify that tool-required questions return TOOLS strategy and generate proper tool calls."""
+        res = plan("what biome am i in?", self.context)
+        self.assertEqual(res.response_strategy, ResponseStrategy.TOOLS)
+        self.assertEqual(len(res.tool_calls), 1)
+        self.assertEqual(res.tool_calls[0].tool, "get_biome")
+
+        res_inv = plan("What's in my inventory?", self.context)
+        self.assertEqual(res_inv.response_strategy, ResponseStrategy.TOOLS)
+        self.assertEqual(len(res_inv.tool_calls), 1)
+        self.assertEqual(res_inv.tool_calls[0].tool, "get_inventory")
+
+    def test_hybrid_intents(self):
+        """Verify that hybrid queries return HYBRID strategy and plan necessary tools first."""
+        res = plan("Can I craft a shield?", self.context)
+        self.assertEqual(res.response_strategy, ResponseStrategy.HYBRID)
+        self.assertEqual(len(res.tool_calls), 1)
+        self.assertEqual(res.tool_calls[0].tool, "get_inventory")
+
+        res_night = plan("Can I survive the night?", self.context)
+        self.assertEqual(res_night.response_strategy, ResponseStrategy.HYBRID)
+        self.assertTrue(len(res_night.tool_calls) > 0)
+
+    def test_response_generator_component(self):
+        """Verify ResponseGenerator returns correct responses for each strategy."""
+        generator = ResponseGenerator()
+        
+        # Test KNOWLEDGE strategy: returns planner's conversational reply
+        reply_know = generator.generate_response(
+            ResponseStrategy.KNOWLEDGE,
+            "How do critical hits work?",
+            self.context,
+            "",
+            "Critical hits deal 1.5x damage."
+        )
+        self.assertEqual(reply_know, "Critical hits deal 1.5x damage.")
+
+        # Test TOOLS strategy: returns raw tool outputs
+        reply_tools = generator.generate_response(
+            ResponseStrategy.TOOLS,
+            "What biome am I in?",
+            self.context,
+            "You are in a Forest biome.",
+            ""
+        )
+        self.assertEqual(reply_tools, "You are in a Forest biome.")
+
+        # Test HYBRID strategy: invokes LLM synthesis
+        reply_hybrid = generator.generate_response(
+            ResponseStrategy.HYBRID,
+            "Can I craft a shield?",
+            self.context,
+            "Inventory: 16 oak logs",
+            ""
+        )
+        self.assertIn("Yes, you can craft a shield", reply_hybrid)
+
+    def test_chat_endpoint_hybrid_flow(self):
+        """Verify FastAPI chat endpoint end-to-end flow for hybrid queries."""
+        client = TestClient(app)
+        request_data = {
+            "message": "Can I craft a shield?",
+            "player": self.context.model_dump(),
+            "memory": {}
+        }
+        response = client.post("/chat", json=request_data)
+        self.assertEqual(response.status_code, 200)
+        
+        data = response.json()
+        self.assertEqual(len(data["tool_calls"]), 1)
+        self.assertEqual(data["tool_calls"][0]["tool"], "get_inventory")
+        # Synthesized reply from mock provider
+        self.assertIn("Yes, you can craft a shield", data["reply"])
 
 if __name__ == "__main__":
     unittest.main()

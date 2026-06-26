@@ -54,9 +54,18 @@ class TestPhase3(unittest.TestCase):
         })
         self.config_patch.start()
 
+        self.rg_config_patch = patch("response_generator.load_config", return_value={
+            "provider": "mock",
+            "model": "mock-model",
+            "enable_prompt_logging": False
+        })
+        self.rg_config_patch.start()
+
     def tearDown(self):
         if hasattr(self, "config_patch"):
             self.config_patch.stop()
+        if hasattr(self, "rg_config_patch"):
+            self.rg_config_patch.stop()
             
         # Restore memory
         if os.path.exists(MEMORY_FILE):

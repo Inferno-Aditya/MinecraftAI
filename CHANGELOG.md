@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [v0.4.1] - 2026-06-26
+
+### Added (Phase 4A.1 Patch)
+- **Hybrid Knowledge & Tool-Based Reasoning**: Refactored the planner engine to act as a knowledgeable Minecraft assistant, using three request strategies:
+  - `KNOWLEDGE`: Answering Minecraft mechanics, recipes, villagers, redstone, and combat questions directly using LLM knowledge without calling tools.
+  - `TOOLS`: Standard world/player lookups that run tool calls directly.
+  - `HYBRID`: Queries requiring both live game state and Minecraft domain knowledge (e.g. craftability checks, survival assessments) that execute tools and then synthesize a final response.
+- **Dedicated Response Generator**: Introduced a separate `ResponseGenerator` component in `backend/response_generator.py` responsible for synthesizing final conversational responses, keeping the planner focused strictly on classification and tool call planning.
+- **Strongly Typed ResponseStrategy**: Replaced previous boolean indicators with a strongly typed `ResponseStrategy` enum (`KNOWLEDGE`, `TOOLS`, `HYBRID`) in `backend/planner.py` to improve architecture readability and future agent/reflection extension.
+- **Comprehensive Integration Tests**: Added test cases for strategy classification, `ResponseGenerator` logic, and FastAPI `/chat` integration in `test_phase4a.py`.
+
+---
+
 ## [v0.4.0] - 2026-06-26
 
 ### Added (Phase 4A)

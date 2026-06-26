@@ -10,7 +10,7 @@
 ![Python](https://img.shields.io/badge/Python-3.10%2B-blue?logo=python)
 ![FastAPI](https://img.shields.io/badge/FastAPI-0.100%2B-teal?logo=fastapi)
 ![Gemini](https://img.shields.io/badge/Gemini-3.5--flash-purple?logo=google)
-![Version](https://img.shields.io/badge/Version-v0.4.0-blue?logo=github)
+![Version](https://img.shields.io/badge/Version-v0.4.1-blue?logo=github)
 ![License](https://img.shields.io/badge/License-MIT-yellow)
 
 ---
@@ -21,12 +21,13 @@
 
 ## Overview
 
-**MinecraftAI** bridges Minecraft Java Edition and a large language model through a clean, local HTTP API. When a player types `/ai <message>`, the Fabric mod collects their full game context — position, inventory, equipment, nearby blocks, nearby entities, weather, world time, light level, and biome details — and sends it as structured JSON to a FastAPI backend running on `localhost:8000`. The backend passes the data through an LLM-powered **Planner**, which decides whether to:
+**MinecraftAI** bridges Minecraft Java Edition and a large language model through a clean, local HTTP API. When a player types `/ai <message>`, the Fabric mod collects their full game context — position, inventory, equipment, nearby blocks, nearby entities, weather, world time, light level, and biome details — and sends it as structured JSON to a FastAPI backend running on `localhost:8000`. The backend passes the data through an LLM-powered **Planner**, which classifies the request into one of three response strategies:
 
-1. **Execute a tool** (e.g., query player status, search inventory, scan the surrounding block layout, locate the nearest entity, or write to memory), or
-2. **Return a conversational reply** (e.g., answer a question, respond to a joke).
+1. **KNOWLEDGE**: Answer general queries (combat mechanics, recipes, redstone, brewing, etc.) directly using the LLM's Minecraft expertise (no tools executed).
+2. **TOOLS**: Execute raw tools (e.g. status checks, inventory searches, block scans) and return the raw output for direct queries.
+3. **HYBRID**: Execute tools to check live game context, then synthesize those results with Minecraft knowledge to provide an intelligent, conversational response (e.g., "Can I craft a shield?").
 
-The result is sent back to the mod, which displays it in the Minecraft chat. Crucially, the LLM **never executes tools itself** — it only decides *which* tools to call and *with what arguments*. All actual execution happens in validated Python code on the backend.
+The result is sent back to the mod, which displays it in the Minecraft chat. Crucially, the LLM **never executes tools itself** — it only decides *which* tools to call and *with what arguments*. All actual execution happens in validated Python code on the backend, and response formatting is handled by a dedicated **Response Generator** component.
 
 The system is designed around three principles: **provider abstraction** (swap Gemini for any other LLM by changing one config line), **tool extensibility** (add new capabilities by implementing a single abstract class), and **persistent memory** (locations and notes survive server restarts via `memory.json`).
 
@@ -41,8 +42,12 @@ The system is designed around three principles: **provider abstraction** (swap G
 - **Short-Lived Scan Caching** — scans are cached within a single request context. Repeated queries for blocks or entities during a single planning pipeline reuse scan results to maintain zero lag.
 - **Smart Block Scanning** — scans a 32-block cube without generating chunks. Distinguishes between filler blocks (stone, dirt, grass, sand, water, lava, etc.) and interesting blocks (ores, chests, wood, crops), capping coords to maintain low JSON payload sizes.
 - **Entity Awareness** — captures nearby players, villagers, passive/hostile mobs, projectiles, and vehicles within a 64-block radius, including distance, health, and location.
-- **Inventory Search & Filter** — supports partial-name queries and summaries for inventory checking (e.g. "Do I have enough wood?").
-- **LLM Planner** — sends structured system + user prompts to Gemini and parses the structured JSON response.
+- **Hybrid Knowledge & Tool-Based Reasoning** — classifies every request into one of three strategies:
+  - **Knowledge-Only**: Answers general queries (combat mechanics, recipes, redstone, brewing, etc.) directly using the LLM's Minecraft expertise (no tools executed).
+  - **Tool-Required**: Executes raw tools (e.g. status checks, inventory searches, block scans) and returns the raw output for direct queries.
+  - **Hybrid**: Executes tools to check live game context, then synthesizes those results with Minecraft knowledge to provide an intelligent, conversational response (e.g., "Can I craft a shield?").
+- **Dedicated Response Generator** — isolates response formatting and LLM synthesis from planning, providing a scalable foundation for multi-step reasoning.
+- **LLM Planner** — sends structured system + user prompts to Gemini, classifies queries via `ResponseStrategy`, and parses the structured JSON response.
 - **Tool execution engine** — validates and dispatches LLM-selected tools in sequence.
 - **Built-in tools:**
   - **Memory:** `save_location`, `load_location`, `list_locations`, `save_note`.
@@ -60,7 +65,7 @@ The system is designed around three principles: **provider abstraction** (swap G
 - **Prompt debug logging** — every generated system + user prompt pair is saved to `logs/prompts/<timestamp>.txt` for inspection.
 - **Graceful error handling** — backend offline, timeout, rate limiting, and malformed responses all result in a clean, friendly in-game message rather than a crash.
 - **Health endpoint** — `GET /health` returns `{"status": "healthy"}` for uptime monitoring.
-- **Unit test suite** — 37 tests across three test files covering memory, planner, tools, providers, retry logic, perception models, scanning calculations, and the full HTTP request/response cycle.
+- **Unit test suite** — 43 tests across three test files covering memory, planner, tools, providers, retry logic, perception models, scanning calculations, and the full HTTP request/response cycle.
 - **Interactive Tool Explorer** — a standalone `tools.html` dashboard (Minecraft-themed, zero dependencies) that dynamically loads `tools.json` to browse, search, and inspect every registered tool with full parameter schemas, examples, and planner trigger phrases.
 
 ### 🔲 Planned Features (Phase 4B+)
@@ -95,6 +100,7 @@ graph TD
     B["Fabric Mod: AIAssistantMod.java"]
     C["FastAPI Backend: main.py (localhost:8000)"]
     D["Planner: planner.py"]
+    R["Response Generator: response_generator.py"]
     E["Provider Factory: providers/__init__.py"]
     F["GeminiProvider: providers/gemini.py"]
     G["MockProvider: providers/mock.py"]
@@ -106,14 +112,16 @@ graph TD
 
     A -- "HTTP POST /chat (JSON)" --> B
     B -- "Async HTTP POST" --> C
-    C --> D
+    C -- "1. plan(message, context)" --> D
     D -- "build_system_prompt" --> N
     D --> E
     E -- "provider=gemini" --> F
     E -- "provider=mock" --> G
-    D -- "parse and validate JSON" --> H
+    C -- "2. If TOOLS or HYBRID: execute" --> H
     H --> I
     I -- "read/write" --> M
+    C -- "3. generate_response(strategy, ...)" --> R
+    R -- "If HYBRID: synthesis call" --> E
     C -- "ChatResponse reply + tool_calls" --> B
     B -- "Minecraft chat message" --> A
     C --> O
@@ -203,9 +211,10 @@ graph TD
 | Component | Location | Responsibility |
 |---|---|---|
 | **Fabric Mod** | `fabric-mod/.../AIAssistantMod.java` | Registers `/ai` command, scans chunks and entities, packages JSON context, displays replies in chat |
-| **FastAPI Backend** | `backend/main.py` | Exposes `/chat` and `/health` endpoints, orchestrates planner and sequential tool execution |
+| **FastAPI Backend** | `backend/main.py` | Exposes `/chat` and `/health` endpoints, orchestrates planner, sequential tool execution, and response generation |
 | **PlayerContext** | `backend/context.py` | Pydantic model refactored into `PlayerInfo` and `EnvironmentSnapshot` with full backward compatibility |
-| **Planner** | `backend/planner.py` | Builds prompts, calls LLM provider, parses/validates response structure, manages retry logic |
+| **Planner** | `backend/planner.py` | Builds prompts, calls LLM provider, classifies queries using `ResponseStrategy`, validates response structure, manages retry logic |
+| **Response Generator** | `backend/response_generator.py` | Synthesizes the final conversational response based on the strategy (`KNOWLEDGE`, `TOOLS`, `HYBRID`) combining context and tool results |
 | **Provider Factory** | `backend/providers/__init__.py` | Factory function retrieving the configured `BaseLLMProvider` |
 | **GeminiProvider** | `backend/providers/gemini.py` | Calls Google Gemini API with JSON mode and timeout configuration |
 | **MockProvider** | `backend/providers/mock.py` | Rule-based LLM simulator supporting all Phase 2 and Phase 4A intents for offline tests |
@@ -313,7 +322,7 @@ minecraft/
 │
 ├── fabric-mod/                 # Minecraft Fabric mod (Java)
 │   ├── build.gradle            # Gradle build: Fabric Loom 1.7.4, Java 21
-│   ├── gradle.properties       # Minecraft 1.21.1, Fabric Loader 0.16.5, mod version v0.4.0
+│   ├── gradle.properties       # Minecraft 1.21.1, Fabric Loader 0.16.5, mod version v0.4.1
 │   ├── settings.gradle
 │   ├── gradlew / gradlew.bat
 │   └── src/main/
@@ -638,13 +647,21 @@ POST /chat
       → build_system_prompt()        # inject tool schemas dynamically from registry
       → build_user_prompt()          # inject player context + memory summary
       → provider.generate()          # call LLM
-      → parse_and_validate()         # validate JSON + tool args via Pydantic
+      → parse_and_validate()         # validate JSON + tool args + response_strategy
       → PlannerResult
-  → for tool_call in planned_result.tool_calls:
-      → registry.execute(tool_name, player, arguments)
-          → tool.input_schema(**arguments)  # Pydantic validation
-          → tool.execute(context, args)     # business logic with cache lookup
-          → {"status", "message", "success", "data", "metadata"}
+  → if strategy is TOOLS or HYBRID:
+      → for tool_call in planned_result.tool_calls:
+          → registry.execute(tool_name, player, arguments)
+              → tool.input_schema(**arguments)  # Pydantic validation
+              → tool.execute(context, args)     # business logic with cache lookup
+              → {"status", "message", "success", "data", "metadata"}
+  → ResponseGenerator.generate_response(strategy, message, context, tool_results, planner_reply)
+      → If KNOWLEDGE: return planner_reply
+      → If TOOLS: return tool_results
+      → If HYBRID:
+          → provider.generate()      # call LLM with synthesis prompt
+          → parse "reply" from JSON
+          → return synthesized reply
   → ChatResponse(reply, tool_calls)
 ```
 
@@ -689,7 +706,7 @@ Each tool entry contains:
   "examples": [{"request": {...}, "response": {...}}],
   "usage_examples": ["what's in my inventory?", ...],
   "source": "backend/tools/get_inventory.py",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "phase": "Phase 4A",
   "tags": ["player", "inventory", "search", "read-only"]
 }
@@ -780,6 +797,13 @@ Phase 4A — Environment Awareness & World Perception      [COMPLETE]
   12 new tools for player, world, environment, and entity awareness
   Comprehensive tests for perception models & calculations (18 tests)
 
+Phase 4A.1 — Hybrid Knowledge & Tool-Based Reasoning      [COMPLETE]
+  Strongly typed ResponseStrategy enum (KNOWLEDGE, TOOLS, HYBRID)
+  Dedicated ResponseGenerator component for isolating response synthesis
+  Hybrid reasoning pipeline: execute tools then synthesize response with LLM knowledge
+  General knowledge passthrough bypassing tool execution for mechanics/recipes
+  Comprehensive integration test suite (43 tests total)
+
 Phase 4B — World Interaction & Intelligent Actions       [PLANNED]
   Safe block placement & breaking tools
   Consolidation of server whitelisted command dispatches
@@ -796,6 +820,16 @@ Phase 6 — Multi-Agent and Ecosystem                      [PLANNED]
   Additional LLM providers (OpenAI, Ollama, OpenRouter)
   Natural language world editing
 ```
+
+---
+
+## Release Notes (v0.4.1)
+
+### v0.4.1 — Hybrid Knowledge & Tool-Based Reasoning (Patch)
+- **Response Strategy Pipeline**: Replaced booleans with a strongly typed `ResponseStrategy` enum (`KNOWLEDGE`, `TOOLS`, `HYBRID`) allowing the AI to answer general/mechanics questions directly (`KNOWLEDGE`), execute tools directly (`TOOLS`), or run tools and synthesize responses (`HYBRID`).
+- **Response Generator Component**: Added the `ResponseGenerator` component in `backend/response_generator.py` to decouple response formatting and LLM synthesis from planning.
+- **Architectural Cleanup**: Updated FastAPI backend `/chat` endpoint to orchestrate planner classifications, execution, and final response synthesis through `ResponseGenerator`.
+- **Testing & Verification**: Added integration tests in `test_phase4a.py` and consolidated Mock LLM Provider rules for offline and deterministic test runs.
 
 ---
 
