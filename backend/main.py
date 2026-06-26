@@ -1,28 +1,51 @@
 import os
+import datetime
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from dotenv import load_dotenv
+from typing import List, Dict, Any
+
+try:
+    from context import PlayerContext
+except ImportError:
+    from .context import PlayerContext
+
+try:
+    from planner import plan, ToolCall
+except ImportError:
+    from .planner import plan, ToolCall
+
+try:
+    from tools import registry
+except ImportError:
+    from .tools import registry
 
 # Load environment variables
 load_dotenv()
 
 app = FastAPI(title="AI Minecraft Assistant Backend")
 
-# Request/Response schemas
-class PlayerContext(BaseModel):
-    name: str
-    x: float
-    y: float
-    z: float
-    yaw: float
-    pitch: float
-    dimension: str
-    gamemode: str
-    health: float
-    food: int
-    world_time: int
-    biome: str = "unknown"
+# Log file path relative to this backend file
+LOG_FILE = os.path.join(os.path.dirname(os.path.dirname(__file__)), "logs", "aiassistant.log")
 
+def log_message(level: str, message: str) -> None:
+    """
+    Logs messages to console stdout and appends to logs/aiassistant.log
+    in the standard Mod log format.
+    """
+    timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    log_entry = f"[{timestamp}] [{level}] {message}\n"
+    # Print to console stdout
+    print(f"[Backend] {log_entry.strip()}")
+    # Write to file
+    try:
+        os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True)
+        with open(LOG_FILE, "a", encoding="utf-8") as f:
+            f.write(log_entry)
+    except Exception as e:
+        print(f"Failed to write to backend log file: {e}")
+
+# Request/Response schemas
 class ChatRequest(BaseModel):
     message: str
     player: PlayerContext
@@ -30,7 +53,7 @@ class ChatRequest(BaseModel):
 
 class ChatResponse(BaseModel):
     reply: str
-    tool_calls: list = []
+    tool_calls: List[ToolCall] = []
 
 @app.get("/health")
 def health_check():
@@ -41,21 +64,55 @@ async def chat_endpoint(request: ChatRequest):
     message = request.message
     player = request.player
 
-    # Get configuration from env
+    # 1. Planner decision
+    planned_calls = plan(message, player)
+    
+    if planned_calls:
+        # We have a tool call planned
+        tool_call = planned_calls[0]  # Regex planner returns at most 1 tool call
+        
+        # Log planner decision separately
+        log_message("INFO", f"Planner selected {tool_call.tool.upper()}")
+        
+        # Format logging for tool execution
+        if tool_call.tool in ["save_location", "load_location"]:
+            log_arg = tool_call.arguments.get("name", "")
+        elif tool_call.tool == "save_note":
+            log_arg = tool_call.arguments.get("key", "")
+        elif tool_call.tool == "list_locations":
+            log_arg = ""
+        else:
+            log_arg = str(tool_call.arguments)
+            
+        log_exec_str = f"{tool_call.tool.upper()}({log_arg})"
+        # Log every tool execution
+        log_message("INFO", log_exec_str)
+        
+        # Execute tool via the registry
+        result = registry.execute(tool_call.tool, player, tool_call.arguments)
+        
+        if result["status"] == "error":
+            log_message("ERROR", f"Tool execution failed: {result['message']}")
+            
+        return ChatResponse(
+            reply=result["message"],
+            tool_calls=planned_calls
+        )
+
+    # 2. LLM Provider or Mock fallback if no tool is planned
     provider = os.getenv("AI_PROVIDER", "").lower()
     gemini_key = os.getenv("GEMINI_API_KEY")
     openai_key = os.getenv("OPENAI_API_KEY")
 
     reply_text = ""
 
-    # 1. Gemini Integration
+    # Gemini Integration
     if provider == "gemini" and gemini_key:
         try:
             import google.generativeai as genai
             genai.configure(api_key=gemini_key)
             model = genai.GenerativeModel("gemini-1.5-flash")
             
-            # Formulate prompt with player context
             system_prompt = (
                 f"You are a helpful AI assistant inside Minecraft playing with {player.name}. "
                 f"Here is the player's context:\n"
@@ -73,7 +130,7 @@ async def chat_endpoint(request: ChatRequest):
         except Exception as e:
             reply_text = f"[Backend Error: Gemini API failed: {str(e)}]"
 
-    # 2. OpenAI Integration
+    # OpenAI Integration
     elif provider == "openai" and openai_key:
         try:
             from openai import OpenAI
@@ -103,10 +160,8 @@ async def chat_endpoint(request: ChatRequest):
         except Exception as e:
             reply_text = f"[Backend Error: OpenAI API failed: {str(e)}]"
 
-    # 3. Mock Fallback
+    # Mock Fallback
     else:
-        # Generate an informative mock response illustrating successful parsing of request context
-        time_formatted = f"{player.world_time} ticks"
         reply_text = (
             f"Hello, {player.name}! This is the local backend. I received your message: '{message}'.\n"
             f"Context: Location: {player.x:.1f}, {player.y:.1f}, {player.z:.1f} in {player.dimension} "
@@ -115,7 +170,7 @@ async def chat_endpoint(request: ChatRequest):
 
     return ChatResponse(
         reply=reply_text,
-        tool_calls=[] # Tool calls are Phase 2 functionality
+        tool_calls=[]
     )
 
 if __name__ == "__main__":
