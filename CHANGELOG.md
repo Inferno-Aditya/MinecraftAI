@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [v0.4.2] - 2026-06-26
+
+### Added (Phase 4A.2 Release)
+- **Automatic Companion Launcher**: Developed a standalone C# WinForms background utility (`MinecraftAICompanion.exe`) that automatically manages the Python backend server lifecycle.
+- **Robust Process Detection**: Detects Minecraft Java process (`javaw.exe`/`java.exe`) using WMI command-line filters (`--gameDir`, `net.minecraft.client.main.Main`) to isolate the active game from other launcher applications.
+- **Smart Attach-to-Existing**: Queries `/health` to connect to pre-existing manual backend server instances, preventing duplicate server execution.
+- **Orphan Process Cleanup**: Integrates native Windows Job Objects to ensure all Python process trees are cleaned up automatically when the launcher exits.
+- **Uptime & Metrics Dashboard**: Includes a dark-themed visual window to monitor Minecraft status, backend PID, launcher/backend uptimes, and retry logs, along with manual force-restart actions.
+- **Flexible Configuration**: Provides `launcher_config.json` with configuration parameters for directories, executables, intervals, retry limits, and an `AutoStartBackend` toggle.
+
+---
+
 ## [v0.4.1] - 2026-06-26
 
 ### Added (Phase 4A.1 Patch)

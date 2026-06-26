@@ -10,7 +10,7 @@
 ![Python](https://img.shields.io/badge/Python-3.10%2B-blue?logo=python)
 ![FastAPI](https://img.shields.io/badge/FastAPI-0.100%2B-teal?logo=fastapi)
 ![Gemini](https://img.shields.io/badge/Gemini-3.5--flash-purple?logo=google)
-![Version](https://img.shields.io/badge/Version-v0.4.1-blue?logo=github)
+![Version](https://img.shields.io/badge/Version-v0.4.2-blue?logo=github)
 ![License](https://img.shields.io/badge/License-MIT-yellow)
 
 ---
@@ -37,6 +37,7 @@ The system is designed around three principles: **provider abstraction** (swap G
 
 ### ✅ Current Features
 
+- **Automatic Companion Launcher** — A standalone C# Windows background utility (`MinecraftAICompanion.exe`) that automatically monitors for Minecraft launching, starts the FastAPI backend server, and shuts it down when Minecraft exits. Features status notifications, duplicate prevention, and zero-leak Windows Job Objects.
 - **`/ai <message>` Fabric command** — triggers the AI assistant in-game from any player message.
 - **Environment & Player Perception** — automatically collects player position, health, hunger, saturation, experience progress/level, gamemode, dimension, inventory items, equipped gear, weather, time, light level, biome, nearby entities, and surrounding block data.
 - **Short-Lived Scan Caching** — scans are cached within a single request context. Repeated queries for blocks or entities during a single planning pipeline reuse scan results to maintain zero lag.
@@ -96,6 +97,7 @@ The system is designed around three principles: **provider abstraction** (swap G
 ### System Flow
 ```mermaid
 graph TD
+    L["Companion Launcher: MinecraftAICompanion.exe"]
     A["Player: /ai message"]
     B["Fabric Mod: AIAssistantMod.java"]
     C["FastAPI Backend: main.py (localhost:8000)"]
@@ -109,6 +111,11 @@ graph TD
     M["memory.json: backend/memory/"]
     N["Prompt Logs: logs/prompts/"]
     O["aiassistant.log: logs/"]
+    P["Minecraft Client Process: javaw.exe"]
+
+    L -- "1. Monitors process" --> P
+    L -- "2. Spawns/manages lifecycle" --> C
+    L -- "3. Health Checks" --> C
 
     A -- "HTTP POST /chat (JSON)" --> B
     B -- "Async HTTP POST" --> C
@@ -429,21 +436,28 @@ This selects the LLM provider and model. Currently supported providers: `gemini`
 
 ---
 
-### 4. Start the Backend Server
+### 4. Start the Backend Server (via Companion Launcher)
 
+You do not need to manually manage the Python backend server. The project includes an **Automatic Companion Launcher** that manages the server lifecycle in the background.
+
+1. Navigate to the `backend-launcher/publish` directory.
+2. Run **`MinecraftAICompanion.exe`**.
+3. The launcher will start in the system tray (slate blue icon) and enter monitoring mode.
+4. When you launch Minecraft, the launcher will automatically:
+   * Detect the Minecraft Java process.
+   * Start the FastAPI backend server using the project's virtual environment.
+   * Change its tray icon to green (Running) once the server reports healthy.
+   * Automatically shut down the backend server when Minecraft exits, returning to monitoring mode.
+
+*Note: You can double-click the system tray icon to open the Status Dashboard showing PID numbers, uptimes, and status details.*
+
+#### Alternative: Manual CLI Startup (for Developers)
+If you prefer running the backend manually via a command prompt:
 ```bash
 # From inside the backend/ directory, with venv active
 uvicorn main:app --host 127.0.0.1 --port 8000
 ```
-
-Verify it is running:
-
-```bash
-curl http://127.0.0.1:8000/health
-# → {"status":"healthy"}
-```
-
-The backend must be running before you launch Minecraft.
+Verify it is running by visiting `http://127.0.0.1:8000/health` (should return `{"status":"healthy"}`).
 
 ---
 
@@ -804,6 +818,14 @@ Phase 4A.1 — Hybrid Knowledge & Tool-Based Reasoning      [COMPLETE]
   General knowledge passthrough bypassing tool execution for mechanics/recipes
   Comprehensive integration test suite (43 tests total)
 
+Phase 4A.2 — Automatic Backend Companion Launcher       [COMPLETE]
+  Windows system tray utility (MinecraftAICompanion.exe)
+  Automatic Minecraft Java process monitoring and detection
+  Lifecycle automation (start backend on Minecraft launch, stop on exit)
+  Duplicate process prevention (attaching to manual instances via health check)
+  Job Object integration to prevent orphan python processes
+  Lightweight Status Dashboard window and colored status icons
+
 Phase 4B — World Interaction & Intelligent Actions       [PLANNED]
   Safe block placement & breaking tools
   Consolidation of server whitelisted command dispatches
@@ -823,7 +845,17 @@ Phase 6 — Multi-Agent and Ecosystem                      [PLANNED]
 
 ---
 
-## Release Notes (v0.4.1)
+## Release Notes (v0.4.2)
+
+### v0.4.2 — Minecraft AI Companion Launcher
+- **Automatic Lifecycle Automation**: Spawns the python backend on Minecraft startup and terminates it when Minecraft exits.
+- **WMI Process Detection**: Inspects running Java client processes using command-line argument queries (`--gameDir`, `net.minecraft.client.main.Main`) to isolate the active game from other launcher applications.
+- **Zero Duplicate Instances**: Performs `/health` queries before spawning the backend; if a healthy instance is already running (e.g. started manually), it attaches to it.
+- **Orphan Prevention**: Uses native Windows Job Objects to ensure that all spawned Python background processes are automatically terminated if the launcher exits, crashes, or is killed.
+- **Status Dashboard**: A dark-themed WinForms user interface showing Minecraft status, backend PID, launcher/backend uptimes, and last health checks, with a button to force restart the backend.
+- **Flexible Configuration**: Provides `launcher_config.json` with configuration parameters for directories, executables, intervals, retry limits, and an `AutoStartBackend` toggle.
+
+---
 
 ### v0.4.1 — Hybrid Knowledge & Tool-Based Reasoning (Patch)
 - **Response Strategy Pipeline**: Replaced booleans with a strongly typed `ResponseStrategy` enum (`KNOWLEDGE`, `TOOLS`, `HYBRID`) allowing the AI to answer general/mechanics questions directly (`KNOWLEDGE`), execute tools directly (`TOOLS`), or run tools and synthesize responses (`HYBRID`).

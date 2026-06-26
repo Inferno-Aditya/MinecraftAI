@@ -1,0 +1,8 @@
+{
+  "BackendDirectory": "../backend",
+  "PythonExecutable": "../backend/venv/Scripts/python.exe",
+  "HealthEndpoint": "http://127.0.0.1:8000/health",
+  "PollIntervalMs": 2000,
+  "MaxRestartAttempts": 3,
+  "AutoStartBackend": true
+}
