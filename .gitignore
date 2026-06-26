@@ -1,0 +1,39 @@
+# Gradle / Java build artifacts
+.gradle/
+build/
+.java-21/
+fabric-mod/.gradle/
+fabric-mod/build/
+fabric-mod/.java-21/
+fabric-mod/bin/
+fabric-mod/out/
+*.class
+
+# Python virtual environment and bytecode
+venv/
+backend/venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Configuration and Secret files
+.env
+backend/.env
+
+# Local runtime logs and configs
+logs/
+fabric-mod/logs/
+fabric-mod/run/
+fabric-mod/config/
+
+# IDE files
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.swp
+Thumbs.db
+.DS_Store

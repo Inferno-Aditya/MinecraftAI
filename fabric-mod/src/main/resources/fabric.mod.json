@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "id": "aiassistant",
+  "name": "AI Minecraft Assistant",
+  "version": "${version}",
+  "description": "An AI assistant inside Minecraft",
+  "authors": [
+    "Antigravity"
+  ],
+  "contact": {
+    "homepage": "https://example.com"
+  },
+  "license": "MIT",
+  "environment": "*",
+  "entrypoints": {
+    "main": [
+      "net.example.aiassistant.AIAssistantMod"
+    ]
+  },
+  "mixins": [],
+  "depends": {
+    "fabricloader": ">=0.16.5",
+    "minecraft": "~1.21.1",
+    "java": ">=21",
+    "fabric-api": "*"
+  }
+}
