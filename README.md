@@ -61,6 +61,7 @@ The system is designed around three principles: **provider abstraction** (swap G
 - **Graceful error handling** — backend offline, timeout, rate limiting, and malformed responses all result in a clean, friendly in-game message rather than a crash.
 - **Health endpoint** — `GET /health` returns `{"status": "healthy"}` for uptime monitoring.
 - **Unit test suite** — 37 tests across three test files covering memory, planner, tools, providers, retry logic, perception models, scanning calculations, and the full HTTP request/response cycle.
+- **Interactive Tool Explorer** — a standalone `tools.html` dashboard (Minecraft-themed, zero dependencies) that dynamically loads `tools.json` to browse, search, and inspect every registered tool with full parameter schemas, examples, and planner trigger phrases.
 
 ### 🔲 Planned Features (Phase 4B+)
 
@@ -259,6 +260,8 @@ graph TD
 ```
 minecraft/
 ├── README.md
+├── tools.json                  # Auto-generated tool registry catalog (16 tools)
+├── tools.html                  # Standalone interactive Tool Explorer dashboard
 ├── Parameters.md               # Original project specification and vision
 ├── CHANGELOG.md                # Project changelog tracking versioned releases
 ├── .gitignore
@@ -643,6 +646,53 @@ POST /chat
           → tool.execute(context, args)     # business logic with cache lookup
           → {"status", "message", "success", "data", "metadata"}
   → ChatResponse(reply, tool_calls)
+```
+
+---
+
+## Tool Explorer
+
+The project includes an **interactive Tool Explorer** — a standalone HTML dashboard for browsing, searching, and inspecting every registered tool.
+
+### Files
+
+| File | Purpose |
+|---|---|
+| `tools.json` | Auto-generated structured catalog of all 16 registered tools with full metadata |
+| `tools.html` | Standalone Minecraft-themed HTML dashboard — no server, no dependencies, open in any browser |
+
+### Opening the Explorer
+
+Simply double-click `tools.html` or open it in any browser. It loads `tools.json` automatically (or uses an embedded fallback if fetch is unavailable on `file://` protocol).
+
+### Features
+
+- **Minecraft-Inspired Theme** — dark stone palette, creeper green highlights, redstone red warnings, category-specific accent colors.
+- **Real-Time Search** — filter tools by name, description, category, parameter names, or tags.
+- **Category Sidebar** — filter by Player, Environment, World, or Memory categories with live tool counts.
+- **Expandable Tool Cards** — click any card to reveal full documentation: parameter table, output JSON schema, request/response examples, and planner trigger phrases.
+- **Statistics Panel** — total tools, category count, average parameters per tool, latest phase, and project version.
+- **Zero Dependencies** — all CSS and JavaScript embedded inline. No React, no build step, no server.
+- **Future-Ready** — modular JavaScript structure designed for easy migration to a React dashboard.
+
+### tools.json Schema
+
+Each tool entry contains:
+
+```json
+{
+  "name": "get_inventory",
+  "category": "Player",
+  "description": "Returns all player inventory items...",
+  "parameters": [{"name": "search", "type": "string", "required": false, ...}],
+  "returns": {"status": "string", "data": {...}},
+  "examples": [{"request": {...}, "response": {...}}],
+  "usage_examples": ["what's in my inventory?", ...],
+  "source": "backend/tools/get_inventory.py",
+  "version": "0.4.0",
+  "phase": "Phase 4A",
+  "tags": ["player", "inventory", "search", "read-only"]
+}
 ```
 
 ---

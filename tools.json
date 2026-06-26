@@ -1,0 +1,745 @@
+{
+  "version": "0.4.0",
+  "generated": "auto",
+  "generator": "MinecraftAI Tool Registry Exporter",
+  "total_tools": 16,
+  "categories": {
+    "Player": {
+      "description": "Tools that read player-specific state: status, inventory, equipment, and held items.",
+      "icon": "🧑"
+    },
+    "Environment": {
+      "description": "Tools that observe the world environment: weather, time, light, and biome conditions.",
+      "icon": "🌍"
+    },
+    "World": {
+      "description": "Tools that scan and search the physical world: blocks, entities, and area analysis.",
+      "icon": "🗺️"
+    },
+    "Memory": {
+      "description": "Tools that persist and retrieve information: saved locations and notes.",
+      "icon": "💾"
+    }
+  },
+  "tools": [
+    {
+      "name": "get_player_status",
+      "category": "Player",
+      "description": "Returns the player's status: health, hunger, saturation, experience level, coordinates, rotation, gamemode, and dimension.",
+      "parameters": [],
+      "returns": {
+        "status": "string — 'success' or 'error'",
+        "message": "string — Human-readable status summary",
+        "data": {
+          "name": "string — Player name",
+          "uuid": "string — Player UUID",
+          "coordinates": {
+            "x": "float",
+            "y": "float",
+            "z": "float"
+          },
+          "rotation": {
+            "yaw": "float",
+            "pitch": "float"
+          },
+          "health": "float — Current health (max 20)",
+          "hunger": "int — Food level (max 20)",
+          "saturation": "float — Saturation level",
+          "experience": "float — Experience progress",
+          "level": "int — Experience level",
+          "gamemode": "string — survival/creative/adventure/spectator",
+          "dimension": "string — overworld/the_nether/the_end"
+        }
+      },
+      "examples": [
+        {
+          "description": "Check player status",
+          "request": { "tool": "get_player_status", "arguments": {} },
+          "response": {
+            "status": "success",
+            "message": "Player Steve status: Health 20.0/20, Hunger 20/20, Level 5, Gamemode survival, Dimension overworld at X=100.0, Y=64.0, Z=-200.0."
+          }
+        }
+      ],
+      "usage_examples": [
+        "what is my status?",
+        "check player status",
+        "show my health and coordinates"
+      ],
+      "source": "backend/tools/get_player_status.py",
+      "version": "0.4.0",
+      "phase": "Phase 4A",
+      "tags": ["player", "health", "coordinates", "status", "perception", "read-only"]
+    },
+    {
+      "name": "get_held_item",
+      "category": "Player",
+      "description": "Returns details of the item currently held in the player's main hand: item type, count, durability, and enchantments.",
+      "parameters": [],
+      "returns": {
+        "status": "string",
+        "message": "string — e.g. 'Holding 1x minecraft:diamond_sword (Enchantments: sharpness 3)'",
+        "data": {
+          "item": "string — Minecraft item ID",
+          "count": "int — Stack count",
+          "durability": "int — Remaining durability",
+          "enchantments": "object — Key-value map of enchantment name to level"
+        }
+      },
+      "examples": [
+        {
+          "description": "Check held item",
+          "request": { "tool": "get_held_item", "arguments": {} },
+          "response": {
+            "status": "success",
+            "message": "Holding 1x minecraft:diamond_sword (Enchantments: sharpness 3). Durability: 1561 remaining.",
+            "data": {
+              "item": "minecraft:diamond_sword",
+              "count": 1,
+              "durability": 1561,
+              "enchantments": { "sharpness": 3 }
+            }
+          }
+        }
+      ],
+      "usage_examples": [
+        "what am i holding?",
+        "check my held item",
+        "what is in my hand?"
+      ],
+      "source": "backend/tools/get_held_item.py",
+      "version": "0.4.0",
+      "phase": "Phase 4A",
+      "tags": ["player", "held-item", "equipment", "perception", "read-only"]
+    },
+    {
+      "name": "get_equipment",
+      "category": "Player",
+      "description": "Returns details of the player's equipped armor and offhand item: helmet, chestplate, leggings, boots, and offhand item.",
+      "parameters": [],
+      "returns": {
+        "status": "string",
+        "message": "string — Formatted equipment list",
+        "data": {
+          "helmet": { "item": "string", "count": "int", "durability": "int", "enchantments": "object" },
+          "chestplate": { "item": "string", "count": "int", "durability": "int", "enchantments": "object" },
+          "leggings": { "item": "string", "count": "int", "durability": "int", "enchantments": "object" },
+          "boots": { "item": "string", "count": "int", "durability": "int", "enchantments": "object" },
+          "offhand": { "item": "string", "count": "int", "durability": "int", "enchantments": "object" }
+        }
+      },
+      "examples": [
+        {
+          "description": "Check equipped armor",
+          "request": { "tool": "get_equipment", "arguments": {} },
+          "response": {
+            "status": "success",
+            "message": "Equipped Gear:\nHelmet: minecraft:diamond_helmet\nChestplate: minecraft:iron_chestplate\nLeggings: None\nBoots: minecraft:leather_boots\nOffhand: minecraft:shield"
+          }
+        }
+      ],
+      "usage_examples": [
+        "what armor am i wearing?",
+        "check my equipment",
+        "show my gear"
+      ],
+      "source": "backend/tools/get_equipment.py",
+      "version": "0.4.0",
+      "phase": "Phase 4A",
+      "tags": ["player", "armor", "equipment", "perception", "read-only"]
+    },
+    {
+      "name": "get_inventory",
+      "category": "Player",
+      "description": "Returns all player inventory items. Supports searching by item name or partial name.",
+      "parameters": [
+        {
+          "name": "search",
+          "type": "string",
+          "required": false,
+          "default": null,
+          "description": "Optional search term to filter inventory items (partial match on name/id)."
+        }
+      ],
+      "returns": {
+        "status": "string",
+        "message": "string — Inventory summary with counts",
+        "data": {
+          "slots": "array — Detailed slot data for matching items",
+          "summary": "object — Item ID to total count mapping"
+        },
+        "metadata": {
+          "search_query": "string",
+          "total_items_found": "int"
+        }
+      },
+      "examples": [
+        {
+          "description": "List full inventory",
+          "request": { "tool": "get_inventory", "arguments": {} },
+          "response": {
+            "status": "success",
+            "message": "Inventory Summary:\n- minecraft:cobblestone: 64\n- minecraft:diamond: 3\n- minecraft:torch: 32"
+          }
+        },
+        {
+          "description": "Search for a specific item",
+          "request": { "tool": "get_inventory", "arguments": { "search": "diamond" } },
+          "response": {
+            "status": "success",
+            "message": "Inventory Summary:\n- minecraft:diamond: 3\n- minecraft:diamond_sword: 1"
+          }
+        }
+      ],
+      "usage_examples": [
+        "what's in my inventory?",
+        "check if i have wood",
+        "do i have any cobblestone?",
+        "search inventory for torch"
+      ],
+      "source": "backend/tools/get_inventory.py",
+      "version": "0.4.0",
+      "phase": "Phase 4A",
+      "tags": ["player", "inventory", "items", "search", "perception", "read-only"]
+    },
+    {
+      "name": "get_weather",
+      "category": "Environment",
+      "description": "Returns current weather status in the Minecraft world: rain, thunder, clear, and duration remaining.",
+      "parameters": [],
+      "returns": {
+        "status": "string",
+        "message": "string — e.g. 'Weather is currently: Clear. Approximately 150.0 seconds remaining.'",
+        "data": {
+          "rain": "boolean",
+          "thunder": "boolean",
+          "clear": "boolean",
+          "time_remaining_ticks": "int",
+          "time_remaining_seconds": "float"
+        }
+      },
+      "examples": [
+        {
+          "description": "Check current weather",
+          "request": { "tool": "get_weather", "arguments": {} },
+          "response": {
+            "status": "success",
+            "message": "Weather is currently: Raining. Approximately 300.0 seconds remaining.",
+            "data": { "rain": true, "thunder": false, "clear": false, "time_remaining_ticks": 6000, "time_remaining_seconds": 300.0 }
+          }
+        }
+      ],
+      "usage_examples": [
+        "what's the weather like?",
+        "is it raining?",
+        "check weather"
+      ],
+      "source": "backend/tools/get_weather.py",
+      "version": "0.4.0",
+      "phase": "Phase 4A",
+      "tags": ["environment", "weather", "rain", "thunder", "perception", "read-only"]
+    },
+    {
+      "name": "get_time",
+      "category": "Environment",
+      "description": "Returns current world time: total world ticks, day/night status, and current moon phase.",
+      "parameters": [],
+      "returns": {
+        "status": "string",
+        "message": "string — e.g. 'World Time: 6000 ticks (Clock: 12:00, State: Day). Moon phase is Full Moon.'",
+        "data": {
+          "world_ticks": "int",
+          "is_day": "boolean",
+          "is_night": "boolean",
+          "moon_phase": "int — 0-7 phase index",
+          "moon_phase_name": "string — e.g. Full Moon, Waning Crescent",
+          "clock_time": "string — HH:MM formatted in-game time"
+        }
+      },
+      "examples": [
+        {
+          "description": "Check world time",
+          "request": { "tool": "get_time", "arguments": {} },
+          "response": {
+            "status": "success",
+            "message": "World Time: 6000 ticks (Clock: 12:00, State: Day). Moon phase is Full Moon.",
+            "data": { "world_ticks": 6000, "is_day": true, "is_night": false, "moon_phase": 0, "moon_phase_name": "Full Moon", "clock_time": "12:00" }
+          }
+        }
+      ],
+      "usage_examples": [
+        "what time is it?",
+        "is it day or night?",
+        "show the time and moon phase"
+      ],
+      "source": "backend/tools/get_time.py",
+      "version": "0.4.0",
+      "phase": "Phase 4A",
+      "tags": ["environment", "time", "day-night", "moon", "perception", "read-only"]
+    },
+    {
+      "name": "get_light_level",
+      "category": "Environment",
+      "description": "Returns light level at the player's current position: block light, sky light, and combined light levels.",
+      "parameters": [],
+      "returns": {
+        "status": "string",
+        "message": "string — e.g. 'Light Level: Combined=12/15 (Block Light=8/15, Sky Light=15/15).'",
+        "data": {
+          "block_light": "int — 0-15",
+          "sky_light": "int — 0-15",
+          "combined_light": "int — 0-15"
+        }
+      },
+      "examples": [
+        {
+          "description": "Check light level",
+          "request": { "tool": "get_light_level", "arguments": {} },
+          "response": {
+            "status": "success",
+            "message": "Light Level: Combined=12/15 (Block Light=8/15, Sky Light=15/15).",
+            "data": { "block_light": 8, "sky_light": 15, "combined_light": 12 }
+          }
+        }
+      ],
+      "usage_examples": [
+        "how bright is it here?",
+        "what is the light level?",
+        "check light level"
+      ],
+      "source": "backend/tools/get_light_level.py",
+      "version": "0.4.0",
+      "phase": "Phase 4A",
+      "tags": ["environment", "light", "brightness", "mob-spawning", "perception", "read-only"]
+    },
+    {
+      "name": "get_biome",
+      "category": "Environment",
+      "description": "Returns details of the biome where the player is currently located: biome name, temperature, rainfall, and category.",
+      "parameters": [],
+      "returns": {
+        "status": "string",
+        "message": "string — e.g. 'You are currently in the biome minecraft:plains (Category: plains, Temperature: 0.80, Rainfall: 0.40).'",
+        "data": {
+          "name": "string — Biome ID",
+          "category": "string — Biome category",
+          "temperature": "float",
+          "rainfall": "float"
+        }
+      },
+      "examples": [
+        {
+          "description": "Check current biome",
+          "request": { "tool": "get_biome", "arguments": {} },
+          "response": {
+            "status": "success",
+            "message": "You are currently in the biome 'minecraft:plains' (Category: plains, Temperature: 0.80, Rainfall: 0.40).",
+            "data": { "name": "minecraft:plains", "category": "plains", "temperature": 0.8, "rainfall": 0.4 }
+          }
+        }
+      ],
+      "usage_examples": [
+        "what biome am i in?",
+        "check biome info",
+        "what is the temperature and biome?"
+      ],
+      "source": "backend/tools/get_biome.py",
+      "version": "0.4.0",
+      "phase": "Phase 4A",
+      "tags": ["environment", "biome", "temperature", "perception", "read-only"]
+    },
+    {
+      "name": "get_nearby_blocks",
+      "category": "World",
+      "description": "Returns all block types, counts, and nearest coordinates within the specified radius (1 to 64 blocks, default 16).",
+      "parameters": [
+        {
+          "name": "radius",
+          "type": "integer",
+          "required": false,
+          "default": 16,
+          "description": "Scan radius in blocks (Chebyshev distance). Clamped to 1–64."
+        }
+      ],
+      "returns": {
+        "status": "string",
+        "message": "string — Formatted list of block types and counts",
+        "data": {
+          "blocks": "array — Objects with type, count, and nearest coordinate"
+        },
+        "metadata": {
+          "requested_radius": "int",
+          "effective_radius": "int",
+          "blocks_scanned": "int",
+          "cache": "string — 'hit' or 'miss'"
+        }
+      },
+      "examples": [
+        {
+          "description": "Scan blocks in default radius",
+          "request": { "tool": "get_nearby_blocks", "arguments": {} },
+          "response": {
+            "status": "success",
+            "message": "Blocks within radius 16:\n- minecraft:stone: 512 occurrences at [98, 60, -198]\n- minecraft:dirt: 128 occurrences at [100, 63, -200]"
+          }
+        },
+        {
+          "description": "Scan with custom radius",
+          "request": { "tool": "get_nearby_blocks", "arguments": { "radius": 8 } },
+          "response": {
+            "status": "success",
+            "message": "Blocks within radius 8:\n- minecraft:stone: 64 occurrences at [99, 62, -199]"
+          }
+        }
+      ],
+      "usage_examples": [
+        "what blocks are around me?",
+        "check blocks within a radius of 10",
+        "show nearby blocks"
+      ],
+      "source": "backend/tools/get_nearby_blocks.py",
+      "version": "0.4.0",
+      "phase": "Phase 4A",
+      "tags": ["world", "blocks", "scan", "radius", "perception", "read-only"]
+    },
+    {
+      "name": "scan_area",
+      "category": "World",
+      "description": "Scans the surroundings and returns a structured high-level summary of the area (biome, terrain, ores, liquids, trees, buildings, etc.).",
+      "parameters": [
+        {
+          "name": "radius",
+          "type": "integer",
+          "required": false,
+          "default": 16,
+          "description": "The scan radius (Chebyshev distance). Clamped to 1–64."
+        }
+      ],
+      "returns": {
+        "status": "string",
+        "message": "string — Area scan report with categorized block counts",
+        "data": {
+          "biome": "string",
+          "height_variation": "int",
+          "stone_count": "int",
+          "water_count": "int",
+          "lava_count": "int",
+          "ore_counts": "object — Ore name to count mapping",
+          "tree_count": "int",
+          "flower_count": "int",
+          "building_blocks_count": "int",
+          "air_count": "int",
+          "terrain_statistics": {
+            "min_y": "int",
+            "max_y": "int",
+            "average_y": "float",
+            "height_variation": "int"
+          }
+        },
+        "metadata": {
+          "requested_radius": "int",
+          "effective_radius": "int",
+          "blocks_analyzed": "int"
+        }
+      },
+      "examples": [
+        {
+          "description": "Scan the surrounding area",
+          "request": { "tool": "scan_area", "arguments": {} },
+          "response": {
+            "status": "success",
+            "message": "Area Scan Report (Radius 16 in Biome: minecraft:plains):\n- Terrain Y Range: 58 to 72 (Variation: 14 blocks)\n- Blocks: Stone=512, Trees/Leaves=64, Buildings=0\n- Liquids: Water=32, Lava=0\n- Ores Detected: coal (8), iron (3)\n- Vegetation/Flowers: 24\n- Air: 2048"
+          }
+        }
+      ],
+      "usage_examples": [
+        "scan this area",
+        "is there any lava or ore nearby?",
+        "what does the surrounding terrain look like?"
+      ],
+      "source": "backend/tools/scan_area.py",
+      "version": "0.4.0",
+      "phase": "Phase 4A",
+      "tags": ["world", "scan", "terrain", "ores", "area-analysis", "perception", "read-only"]
+    },
+    {
+      "name": "find_nearest",
+      "category": "World",
+      "description": "Finds the coordinates, distance, and direction of the nearest occurrence of a specific block type or entity type within a 64-block radius.",
+      "parameters": [
+        {
+          "name": "target_type",
+          "type": "string",
+          "required": true,
+          "default": null,
+          "description": "The block type or entity type to find (e.g. 'minecraft:water', 'zombie', 'chest', 'sheep')."
+        }
+      ],
+      "returns": {
+        "status": "string",
+        "message": "string — Description of the found target with distance and direction",
+        "data": {
+          "found": "boolean",
+          "type": "string — 'block' or 'entity'",
+          "id": "string — Minecraft ID",
+          "name": "string — Entity display name (entity only)",
+          "coordinates": "array — [x, y, z]",
+          "distance": "float — Distance in blocks",
+          "direction": "string — Cardinal/intercardinal direction",
+          "confidence": "float — 0.0 or 1.0"
+        },
+        "metadata": {
+          "target_query": "string",
+          "scan_radius": "int — Always 64"
+        }
+      },
+      "examples": [
+        {
+          "description": "Find nearest water source",
+          "request": { "tool": "find_nearest", "arguments": { "target_type": "water" } },
+          "response": {
+            "status": "success",
+            "message": "Found nearest block 'minecraft:water' at coordinates [105, 62, -195] (12.0 blocks away, direction: NE)."
+          }
+        },
+        {
+          "description": "Locate a nearby zombie",
+          "request": { "tool": "find_nearest", "arguments": { "target_type": "zombie" } },
+          "response": {
+            "status": "success",
+            "message": "Found nearest entity 'Zombie' (minecraft:zombie) at coordinates [110.5, 64.0, -205.3] (15.2 blocks away, direction: SW)."
+          }
+        }
+      ],
+      "usage_examples": [
+        "where is the closest water?",
+        "find the nearest chest",
+        "is there a zombie nearby?",
+        "locate a sheep"
+      ],
+      "source": "backend/tools/find_nearest.py",
+      "version": "0.4.0",
+      "phase": "Phase 4A",
+      "tags": ["world", "search", "navigation", "blocks", "entities", "perception", "read-only"]
+    },
+    {
+      "name": "get_nearby_entities",
+      "category": "World",
+      "description": "Returns a list of all entities near the player (players, passive mobs, hostile mobs, villagers, animals, vehicles, projectiles) within the specified radius (default 64).",
+      "parameters": [
+        {
+          "name": "radius",
+          "type": "integer",
+          "required": false,
+          "default": 64,
+          "description": "Maximum distance to filter entities (1 to 64 blocks)."
+        }
+      ],
+      "returns": {
+        "status": "string",
+        "message": "string — Categorized entity list",
+        "data": {
+          "entities": "array — Objects with type, name, health, max_health, distance, category, coordinates"
+        },
+        "metadata": {
+          "requested_radius": "int",
+          "effective_radius": "int",
+          "entities_count": "int"
+        }
+      },
+      "examples": [
+        {
+          "description": "Check for nearby entities",
+          "request": { "tool": "get_nearby_entities", "arguments": {} },
+          "response": {
+            "status": "success",
+            "message": "Nearby entities in radius 64m:\n- Hostile Mobs: Zombie (12.5m), Skeleton (30.0m)\n- Passive/Animals: Cow (5.2m), Sheep (8.1m)"
+          }
+        }
+      ],
+      "usage_examples": [
+        "are there monsters close to me?",
+        "check nearby entities",
+        "are there any players or villagers nearby?",
+        "list entities in radius 20"
+      ],
+      "source": "backend/tools/get_nearby_entities.py",
+      "version": "0.4.0",
+      "phase": "Phase 4A",
+      "tags": ["world", "entities", "mobs", "hostile", "passive", "perception", "read-only"]
+    },
+    {
+      "name": "save_location",
+      "category": "Memory",
+      "description": "Saves the player's current location (coordinates, dimension, biome) to memory.",
+      "parameters": [
+        {
+          "name": "name",
+          "type": "string",
+          "required": true,
+          "default": null,
+          "description": "The name of the location to save."
+        }
+      ],
+      "returns": {
+        "status": "string",
+        "message": "string — Confirmation with coordinates",
+        "data": {
+          "x": "float",
+          "y": "float",
+          "z": "float",
+          "dimension": "string",
+          "biome": "string",
+          "timestamp": "string — ISO 8601 UTC timestamp"
+        }
+      },
+      "examples": [
+        {
+          "description": "Save current location as 'home'",
+          "request": { "tool": "save_location", "arguments": { "name": "home" } },
+          "response": {
+            "status": "success",
+            "message": "Saved location 'home' at coordinates x=100.0, y=64.0, z=-200.0 in overworld.",
+            "data": { "x": 100.0, "y": 64.0, "z": -200.0, "dimension": "overworld", "biome": "minecraft:plains", "timestamp": "2026-06-26T12:00:00+00:00" }
+          }
+        }
+      ],
+      "usage_examples": [
+        "remember this place as home",
+        "save this location as base",
+        "remember this location as mine"
+      ],
+      "source": "backend/tools/save_location.py",
+      "version": "0.2.0",
+      "phase": "Phase 2",
+      "tags": ["memory", "location", "save", "persistence", "coordinates"]
+    },
+    {
+      "name": "load_location",
+      "category": "Memory",
+      "description": "Retrieves the saved coordinates and dimension for a given location name.",
+      "parameters": [
+        {
+          "name": "name",
+          "type": "string",
+          "required": true,
+          "default": null,
+          "description": "The name of the location to load."
+        }
+      ],
+      "returns": {
+        "status": "string",
+        "message": "string — Location details or 'not saved' error",
+        "data": {
+          "x": "float",
+          "y": "float",
+          "z": "float",
+          "dimension": "string",
+          "biome": "string",
+          "timestamp": "string"
+        }
+      },
+      "examples": [
+        {
+          "description": "Load a saved location",
+          "request": { "tool": "load_location", "arguments": { "name": "home" } },
+          "response": {
+            "status": "success",
+            "message": "Loaded location 'home': coordinates are x=100.0, y=64.0, z=-200.0 in overworld."
+          }
+        }
+      ],
+      "usage_examples": [
+        "where is home",
+        "load location base",
+        "get location mine"
+      ],
+      "source": "backend/tools/load_location.py",
+      "version": "0.2.0",
+      "phase": "Phase 2",
+      "tags": ["memory", "location", "load", "retrieval", "coordinates"]
+    },
+    {
+      "name": "list_locations",
+      "category": "Memory",
+      "description": "Lists all saved location names.",
+      "parameters": [],
+      "returns": {
+        "status": "string",
+        "message": "string — Comma-separated list of saved locations",
+        "data": {
+          "locations": "array — List of location name strings"
+        }
+      },
+      "examples": [
+        {
+          "description": "List all saved locations",
+          "request": { "tool": "list_locations", "arguments": {} },
+          "response": {
+            "status": "success",
+            "message": "Saved locations: home, base, mine.",
+            "data": { "locations": ["home", "base", "mine"] }
+          }
+        }
+      ],
+      "usage_examples": [
+        "list locations",
+        "show locations",
+        "what locations are saved"
+      ],
+      "source": "backend/tools/list_locations.py",
+      "version": "0.2.0",
+      "phase": "Phase 2",
+      "tags": ["memory", "location", "list", "retrieval"]
+    },
+    {
+      "name": "save_note",
+      "category": "Memory",
+      "description": "Stores an arbitrary note under a key in the persistent notes memory.",
+      "parameters": [
+        {
+          "name": "key",
+          "type": "string",
+          "required": true,
+          "default": null,
+          "description": "The key or topic of the note."
+        },
+        {
+          "name": "value",
+          "type": "string",
+          "required": true,
+          "default": null,
+          "description": "The text content to store."
+        }
+      ],
+      "returns": {
+        "status": "string",
+        "message": "string — Confirmation with key and value",
+        "data": {
+          "key": "string — Normalized key (spaces → underscores)",
+          "value": "string — Stored text"
+        }
+      },
+      "examples": [
+        {
+          "description": "Save a note",
+          "request": { "tool": "save_note", "arguments": { "key": "favorite_block", "value": "spruce planks" } },
+          "response": {
+            "status": "success",
+            "message": "Saved note for 'favorite_block': 'spruce planks'.",
+            "data": { "key": "favorite_block", "value": "spruce planks" }
+          }
+        }
+      ],
+      "usage_examples": [
+        "remember my favorite block is spruce",
+        "remember that my dog is named buddy",
+        "save note favorite_color as blue"
+      ],
+      "source": "backend/tools/save_note.py",
+      "version": "0.2.0",
+      "phase": "Phase 2",
+      "tags": ["memory", "notes", "save", "persistence", "key-value"]
+    }
+  ]
+}
