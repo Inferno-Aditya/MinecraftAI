@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [v0.4.3] - 2026-06-26
+
+### Added (Phase 4A.3 Release)
+- **AI Resource Manager**: Developed a provider-agnostic core manager supporting token accounting, moving-average query latency tracking, and request diagnostics.
+- **Proactive & Reactive Rate Limiting**: Implemented RPM, TPM, and RPD verification with auto-sleep queueing and exponential backoff retry cycles (2s, 4s, 8s) on HTTP 429 rate limit exceptions.
+- **FastAPI REST API Server**: Setup CORS policies and added dedicated endpoints for remote statistics telemetry, masked environment configuration, available providers, tool schemas, database memory CRUD, and streamed console logging.
+- **React Visual Dashboard**: Created a dark-themed visual SPA dashboard served directly from the backend server using custom Minecraft stone elements, Creeper green accents, responsive grids, and SVG metrics charts.
+- **Dynamic Configuration Updates**: Re-evaluates `.env` settings dynamically via `load_dotenv(override=True)` upon key updates, bypassing backend restart requirements.
+- **Unit & Integration Tests**: Implemented `test_resource_manager.py` verifying request stats persistence to `usage_stats.json` and correct rate-limit retry policies.
+
+---
+
 ## [v0.4.2] - 2026-06-26
 
 ### Added (Phase 4A.2 Release)

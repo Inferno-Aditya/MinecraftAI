@@ -27,6 +27,7 @@ fabric-mod/logs/
 fabric-mod/run/
 fabric-mod/config/
 backend/memory/memory.json
+backend/usage_stats.json
 
 # IDE files
 .vscode/

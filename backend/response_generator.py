@@ -18,9 +18,9 @@ except ImportError:
     from .config import load_config
 
 try:
-    from providers import get_provider
+    from resource_manager import execute_llm_request_with_rate_limits
 except ImportError:
-    from .providers import get_provider
+    from .resource_manager import execute_llm_request_with_rate_limits
 
 try:
     from memory import get_memory_summary
@@ -56,12 +56,6 @@ class ResponseGenerator:
 
         if strategy == ResponseStrategy.HYBRID:
             log_message("INFO", f"Synthesizing hybrid response via provider '{self.provider_name}' using model '{self.model_name}'")
-            
-            try:
-                provider = get_provider(self.provider_name, self.model_name)
-            except Exception as e:
-                log_message("ERROR", f"Failed to initialize LLM provider '{self.provider_name}' for synthesis: {str(e)}")
-                return f"I performed the checks but couldn't reach the synthesis engine. Raw results:\n{tool_results}"
 
             system_prompt = (
                 "You are a Minecraft expert and a helpful AI companion.\n"
@@ -108,11 +102,10 @@ class ResponseGenerator:
                 except Exception:
                     pass
 
-            start_time = time.time()
             try:
-                response_text = provider.generate(system_prompt, user_prompt)
-                latency = time.time() - start_time
-                log_message("INFO", f"LLM synthesis responded in {latency:.2f}s")
+                response_text = execute_llm_request_with_rate_limits(
+                    self.provider_name, self.model_name, system_prompt, user_prompt, request_type="synthesis"
+                )
                 
                 # Clean markdown block markers if any
                 def clean_markdown_json(text: str) -> str:
@@ -134,8 +127,6 @@ class ResponseGenerator:
                     pass
                 return response_text.strip()
             except Exception as e:
-                latency = time.time() - start_time
-                log_message("ERROR", f"LLM synthesis call failed after {latency:.2f}s: {str(e)}")
                 return f"I performed the checks but encountered an error synthesizing the final advice. Raw results:\n{tool_results}"
 
         return tool_results

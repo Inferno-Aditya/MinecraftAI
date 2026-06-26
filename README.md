@@ -10,7 +10,7 @@
 ![Python](https://img.shields.io/badge/Python-3.10%2B-blue?logo=python)
 ![FastAPI](https://img.shields.io/badge/FastAPI-0.100%2B-teal?logo=fastapi)
 ![Gemini](https://img.shields.io/badge/Gemini-3.5--flash-purple?logo=google)
-![Version](https://img.shields.io/badge/Version-v0.4.2-blue?logo=github)
+![Version](https://img.shields.io/badge/Version-v0.4.3-blue?logo=github)
 ![License](https://img.shields.io/badge/License-MIT-yellow)
 
 ---
@@ -37,6 +37,7 @@ The system is designed around three principles: **provider abstraction** (swap G
 
 ### ✅ Current Features
 
+- **AI Resource Manager & React Dashboard** — A dedicated provider-agnostic resource manager that tracks input/output token usage, moving average latency, and session stats. Restricts queries via RPM, TPM, and RPD rate limits with automatic sleep-delay queueing and exponential backoff retry handling for rate-limit warnings. Exposes a local, beautiful Minecraft-themed React visual dashboard at `/dashboard/` for remote configuration updates, memory CRUD editing, event logging console, and live stats charts.
 - **Automatic Companion Launcher** — A standalone C# Windows background utility (`MinecraftAICompanion.exe`) that automatically monitors for Minecraft launching, starts the FastAPI backend server, and shuts it down when Minecraft exits. Features status notifications, duplicate prevention, and zero-leak Windows Job Objects.
 - **`/ai <message>` Fabric command** — triggers the AI assistant in-game from any player message.
 - **Environment & Player Perception** — automatically collects player position, health, hunger, saturation, experience progress/level, gamemode, dimension, inventory items, equipped gear, weather, time, light level, biome, nearby entities, and surrounding block data.
@@ -82,7 +83,13 @@ The system is designed around three principles: **provider abstraction** (swap G
 
 ## Demo
 
-> Screenshots and recordings to be added once the project has a public release.
+### React Dashboard UI
+
+Here is a visual overview of the React Dashboard interface demonstrating telemetry charts, configuration panels, memory editing, and the log terminal:
+
+![React Dashboard UI](file:///e:/Personal/minecraft/docs/dashboard_ui_mockup.png)
+
+> Screenshots and recordings of the Fabric Mod in-game chat to be added once the project has a public release.
 
 | Type | Placeholder |
 |---|---|
@@ -97,10 +104,13 @@ The system is designed around three principles: **provider abstraction** (swap G
 ### System Flow
 ```mermaid
 graph TD
+    User["User (Web Browser)"]
     L["Companion Launcher: MinecraftAICompanion.exe"]
     A["Player: /ai message"]
     B["Fabric Mod: AIAssistantMod.java"]
     C["FastAPI Backend: main.py (localhost:8000)"]
+    DB["React Dashboard: /dashboard/"]
+    RM["Resource Manager: resource_manager.py"]
     D["Planner: planner.py"]
     R["Response Generator: response_generator.py"]
     E["Provider Factory: providers/__init__.py"]
@@ -109,30 +119,66 @@ graph TD
     H["Tool Registry: tools/registry.py"]
     I["Environment & Memory Tools"]
     M["memory.json: backend/memory/"]
+    US["usage_stats.json: backend/"]
     N["Prompt Logs: logs/prompts/"]
     O["aiassistant.log: logs/"]
     P["Minecraft Client Process: javaw.exe"]
 
     L -- "1. Monitors process" --> P
     L -- "2. Spawns/manages lifecycle" --> C
-    L -- "3. Health Checks" --> C
+    L -- "3. Uptime Heartbeat" --> C
+
+    User -- "Interacts with UI" --> DB
+    DB -- "HTTP REST APIs /api/..." --> C
 
     A -- "HTTP POST /chat (JSON)" --> B
     B -- "Async HTTP POST" --> C
+    
     C -- "1. plan(message, context)" --> D
-    D -- "build_system_prompt" --> N
-    D --> E
-    E -- "provider=gemini" --> F
-    E -- "provider=mock" --> G
-    C -- "2. If TOOLS or HYBRID: execute" --> H
+    C -- "2. If TOOLS/HYBRID: execute" --> H
     H --> I
     I -- "read/write" --> M
     C -- "3. generate_response(strategy, ...)" --> R
-    R -- "If HYBRID: synthesis call" --> E
-    C -- "ChatResponse reply + tool_calls" --> B
-    B -- "Minecraft chat message" --> A
+
+    D -- "routes LLM requests" --> RM
+    R -- "routes LLM requests" --> RM
+    
+    RM -- "1. Proactive Rate Limits" --> RM
+    RM -- "2. Executes Request" --> E
+    RM -- "3. Reactive Retries / 429 Backoff" --> RM
+    RM -- "4. Token Accounting & Telemetry" --> US
+    
+    E -- "provider=gemini" --> F
+    E -- "provider=mock" --> G
+    
+    D -- "build_system_prompt" --> N
     C --> O
     B --> O
+    B -- "Minecraft chat message" --> A
+```
+
+### AI Resource Manager Execution Flow
+```mermaid
+graph TD
+    A["Request: execute_llm_request_with_rate_limits()"] --> B["1. Estimate Input Tokens"]
+    B --> C["2. Proactive Rate Limiter check"]
+    C -- "Limit Breached (RPM/TPM)" --> D["Sleep delay & check again"]
+    C -- "Daily Quota Exceeded" --> E["Raise Exception (Block request)"]
+    C -- "Limits OK" --> F["3. Call LLM Provider (Attempt 1 to N)"]
+    
+    F -- "Success" --> G["Record Success Telemetry"]
+    G --> H["Save usage_stats.json"]
+    H --> I["Return Response Text"]
+    
+    F -- "Failure: Rate Limit (429)" --> J["Is attempt < max_retries?"]
+    J -- "Yes" --> K["Wait (Exponential Backoff 2s, 4s, 8s) & Retry"]
+    K --> F
+    J -- "No" --> L["Record Failure Telemetry"]
+    L --> M["Save usage_stats.json"]
+    M --> N["Raise Exception"]
+    
+    F -- "Failure: Other Exception" --> L
+```
 ```
 
 ### Environment Awareness Scan Flow
@@ -218,17 +264,19 @@ graph TD
 | Component | Location | Responsibility |
 |---|---|---|
 | **Fabric Mod** | `fabric-mod/.../AIAssistantMod.java` | Registers `/ai` command, scans chunks and entities, packages JSON context, displays replies in chat |
-| **FastAPI Backend** | `backend/main.py` | Exposes `/chat` and `/health` endpoints, orchestrates planner, sequential tool execution, and response generation |
+| **FastAPI Backend** | `backend/main.py` | Exposes `/chat`, `/health`, and REST endpoints; serves the static React Dashboard |
+| **React Dashboard** | `dashboard/src/...` | Single-page UI for system monitoring, live settings, memory CRUD, tool explorer, and log console |
+| **AI Resource Manager** | `backend/resource_manager.py` | Single LLM gateway managing statistics, rate limits (RPM, TPM, RPD), retries, telemetry, and heartbeats |
 | **PlayerContext** | `backend/context.py` | Pydantic model refactored into `PlayerInfo` and `EnvironmentSnapshot` with full backward compatibility |
-| **Planner** | `backend/planner.py` | Builds prompts, calls LLM provider, classifies queries using `ResponseStrategy`, validates response structure, manages retry logic |
-| **Response Generator** | `backend/response_generator.py` | Synthesizes the final conversational response based on the strategy (`KNOWLEDGE`, `TOOLS`, `HYBRID`) combining context and tool results |
+| **Planner** | `backend/planner.py` | Builds prompts, calls LLM provider through Resource Manager gateway, classifies queries, validates structure |
+| **Response Generator** | `backend/response_generator.py` | Synthesizes final response via Resource Manager gateway, combining context and tool results |
 | **Provider Factory** | `backend/providers/__init__.py` | Factory function retrieving the configured `BaseLLMProvider` |
-| **GeminiProvider** | `backend/providers/gemini.py` | Calls Google Gemini API with JSON mode and timeout configuration |
+| **GeminiProvider** | `backend/providers/gemini.py` | Calls Google Gemini API, captures token counts from metadata, handles dynamic key loading |
 | **MockProvider** | `backend/providers/mock.py` | Rule-based LLM simulator supporting all Phase 2 and Phase 4A intents for offline tests |
 | **Tool Registry** | `backend/tools/registry.py` | Manages tool registration, resolving, and argument validation |
 | **BaseTool** | `backend/tools/base.py` | Abstract Base Class specifying tool properties (`name`, `description`, `input_schema`, `execute`) |
 | **Memory Manager** | `backend/memory.py` | Persistent JSON memory storage using safe temp-file replacement |
-| **Config Loader** | `backend/config.py` | Handles runtime configurations loaded on each request |
+| **Config Loader** | `backend/config.py` | Handles runtime configurations loaded on each request (provider settings, rate limits) |
 
 ---
 
@@ -283,23 +331,26 @@ minecraft/
 ├── .gitignore
 │
 ├── backend/                    # Python FastAPI backend
-│   ├── main.py                 # FastAPI app, /chat and /health endpoints, execution engine
+│   ├── main.py                 # FastAPI app, REST APIs, serving static dashboard
 │   ├── planner.py              # LLM planner: prompt generation, provider calls, retry logic
 │   ├── context.py              # PlayerContext and perception Pydantic models
 │   ├── memory.py               # Persistent memory: load, save, atomic write, summary
-│   ├── config.py               # config.json loader with defaults
-│   ├── config.json             # Runtime config: provider name and model
+│   ├── config.py               # config.json loader with defaults and dynamic dotenv reloading
+│   ├── config.json             # Runtime config: provider name, model, rate limits
+│   ├── resource_manager.py     # AI Resource Manager: token tracker, rate limiter, retries
+│   ├── usage_stats.json        # Persistent usage metrics and token telemetry logs
 │   ├── .env                    # Secret keys (git-ignored)
 │   ├── .env.example            # Template for .env
 │   ├── requirements.txt        # Python dependencies
 │   ├── test_phase2.py          # Unit tests: memory, tools, planner, player context
 │   ├── test_phase3.py          # Integration tests: HTTP endpoints, retry, providers, config
-│   ├── test_phase4a.py         # Perception tests: environment scanning, weather, entities, tools, cache
+│   ├── test_phase4a.py         # Perception tests: environment scanning, weather, entities, cache
+│   ├── test_resource_manager.py # Unit tests: token tracking, rate limits, retries
 │   │
 │   ├── providers/              # LLM provider abstraction layer
 │   │   ├── __init__.py         # get_provider() factory function
 │   │   ├── base.py             # BaseLLMProvider ABC
-│   │   ├── gemini.py           # Google Gemini implementation
+│   │   ├── gemini.py           # Google Gemini implementation extracting token metadata
 │   │   └── mock.py             # Deterministic mock for offline testing
 │   │
 │   ├── tools/                  # Tool registry and implementations
@@ -327,9 +378,16 @@ minecraft/
 │   └── memory/
 │       └── memory.json         # Persistent memory store (git-ignored)
 │
+├── dashboard/                  # React Vite SPA Dashboard frontend
+│   ├── src/                    # Dashboard React source code (App.jsx, main.jsx, index.css)
+│   ├── dist/                   # Production build assets served statically by backend
+│   ├── package.json            # NPM dependencies and scripts
+│   ├── vite.config.js          # Vite configuration with relative base routing
+│   └── .gitignore
+│
 ├── fabric-mod/                 # Minecraft Fabric mod (Java)
 │   ├── build.gradle            # Gradle build: Fabric Loom 1.7.4, Java 21
-│   ├── gradle.properties       # Minecraft 1.21.1, Fabric Loader 0.16.5, mod version v0.4.1
+│   ├── gradle.properties       # Minecraft 1.21.1, Fabric Loader 0.16.5, mod version v0.4.3
 │   ├── settings.gradle
 │   ├── gradlew / gradlew.bat
 │   └── src/main/
@@ -366,6 +424,9 @@ minecraft/
 | **JSON (mod side)** | Gson (via Fabric) | bundled |
 | **Testing** | Python `unittest` + `fastapi.testclient` | stdlib |
 | **Memory storage** | JSON file | — |
+| **Dashboard Core** | React | 19.2.7 |
+| **Dashboard Bundler** | Vite | 8.1.0 |
+| **Dashboard Styles** | Vanilla CSS (Minecraft dark theme) | — |
 
 ---
 
@@ -457,7 +518,22 @@ If you prefer running the backend manually via a command prompt:
 # From inside the backend/ directory, with venv active
 uvicorn main:app --host 127.0.0.1 --port 8000
 ```
-Verify it is running by visiting `http://127.0.0.1:8000/health` (should return `{"status":"healthy"}`).
+Verify it is running by visiting `http://127.0.0.1:8000/health` (should return `{"status":"healthy"}`). You can access the **React Dashboard** by visiting `http://127.0.0.1:8000/dashboard/` or `http://127.0.0.1:8000/` in any modern web browser.
+
+#### Running React Dashboard for Development (Optional)
+If you want to run the Vite dev server with hot-reload:
+```bash
+cd dashboard
+npm install
+npm run dev
+```
+By default, the development server runs at `http://localhost:5173/`. It connects to the FastAPI REST endpoints running on port `8000`.
+
+To build the static assets for FastAPI production deployment manually:
+```bash
+cmd.exe /c npm run build
+```
+This will compile the single-page application into the `dashboard/dist` folder, which is mounted automatically by the backend server.
 
 ---
 
@@ -533,6 +609,53 @@ Checked-in template:
 # Replace with your actual Gemini API Key
 GEMINI_API_KEY=YOUR_API_KEY
 ```
+
+---
+
+## REST API Endpoints
+
+The FastAPI backend exposes the following REST endpoints to communicate with the mod, companion launcher, and dashboard:
+
+### General & Uptime
+- **`GET /health`**
+  - Heartbeat status indicator. Records companion launcher active check.
+  - *Response:* `{"status": "healthy"}`
+
+### AI Resource Manager
+- **`GET /api/resources/stats`**
+  - Delivers complete usage stats (tokens today, requests today, uptime, etc.), weekly daily summaries, and a sliding log of recent requests.
+- **`GET /api/providers`**
+  - Returns a list of supported AI providers, active models, default selection, and whether their API key is loaded.
+
+### Configuration Manager
+- **`GET /api/config`**
+  - Returns current settings with API key masked (`********`).
+- **`POST /api/config`**
+  - Updates runtime configurations in `config.json` and updates `.env` dynamically.
+
+### Log Streaming
+- **`GET /api/logs`**
+  - Returns parsed, categorized system logs (Tool Executions, Errors, General) from backend log files and launcher log files. Supports level, category, source, and text filters.
+
+### Memory CRUD Operations
+- **`GET /api/memory`**
+  - Retrieves the complete persistent `memory.json` data (locations, notes, preferences).
+- **`PUT /api/memory/locations/{name}`**
+  - Adds or edits a named coordinate location memory (dimension, x, y, z, biome).
+- **`DELETE /api/memory/locations/{name}`**
+  - Deletes a named coordinate location memory.
+- **`PUT /api/memory/notes/{key}`**
+  - Adds or updates a named text note value.
+- **`DELETE /api/memory/notes/{key}`**
+  - Deletes a note by key.
+- **`PUT /api/memory/preferences/{key}`**
+  - Adds or updates a configuration preference.
+- **`DELETE /api/memory/preferences/{key}`**
+  - Deletes a preference by key.
+
+### Tool Registry
+- **`GET /api/tools`**
+  - Returns a list of all 16 registered mod tools categorized with their Pydantic parameters, descriptions, and trigger phrase lists.
 
 ---
 
@@ -826,6 +949,14 @@ Phase 4A.2 — Automatic Backend Companion Launcher       [COMPLETE]
   Job Object integration to prevent orphan python processes
   Lightweight Status Dashboard window and colored status icons
 
+Phase 4A.3 — AI Resource Manager & React Dashboard       [COMPLETE]
+  Intelligent provider-agnostic AI Resource Manager with telemetry, rate limiting, and backoff retries
+  Active backend/launcher token accounting and query latency monitoring
+  Dynamic reload of .env configuration settings without backend process restarts
+  Modular REST API endpoints for remote settings, memory management, tool schemas, and logs
+  FastAPI-integrated React SPA Dashboard with a custom Minecraft dark/Creeper green aesthetic
+  Real-time charts, log viewer, Memory CRUD grid, and live configuration updates
+
 Phase 4B — World Interaction & Intelligent Actions       [PLANNED]
   Safe block placement & breaking tools
   Consolidation of server whitelisted command dispatches
@@ -842,6 +973,16 @@ Phase 6 — Multi-Agent and Ecosystem                      [PLANNED]
   Additional LLM providers (OpenAI, Ollama, OpenRouter)
   Natural language world editing
 ```
+
+---
+
+## Release Notes (v0.4.3)
+
+### v0.4.3 — AI Resource Manager & React Dashboard
+- **Intelligent Resource Management**: Built a provider-agnostic resource manager supporting proactive/reactive rate limiting (RPM, TPM, RPD) with automated sleep delays and exponential backoffs.
+- **Detailed Telemetry & Token Accounting**: Captures token metadata directly from Gemini API calls and aggregates statistics locally into `usage_stats.json`.
+- **FastAPI REST API Layer**: Exposed secure, masked REST endpoints for remote configuration updates, database memory CRUD operations, registered tools discovery, and log streaming.
+- **Beautiful React Dashboard**: Developed a modern single-page frontend served natively at `/dashboard/` with a Minecraft dark/Creeper green aesthetic, SVG utilization charts, event log filter terminal, and memory editors.
 
 ---
 

@@ -16,9 +16,9 @@ except ImportError:
     from .config import load_config
 
 try:
-    from providers import get_provider
+    from resource_manager import execute_llm_request_with_rate_limits
 except ImportError:
-    from .providers import get_provider
+    from .resource_manager import execute_llm_request_with_rate_limits
 
 try:
     from memory import get_memory_summary
@@ -289,15 +289,6 @@ def plan(message: str, player_context: PlayerContext) -> PlannerResult:
         def log_message(level, msg):
             print(f"[{level}] {msg}")
 
-    try:
-        provider = get_provider(provider_name, model_name)
-    except Exception as e:
-        log_message("ERROR", f"Failed to initialize LLM provider '{provider_name}': {str(e)}")
-        return PlannerResult(
-            reply=f"Error initializing LLM Provider '{provider_name}': {str(e)}",
-            tool_calls=[]
-        )
-
     system_prompt = build_system_prompt()
     user_prompt = build_user_prompt(message, player_context)
     
@@ -306,16 +297,11 @@ def plan(message: str, player_context: PlayerContext) -> PlannerResult:
 
     log_message("INFO", f"Planning via provider '{provider_name}' using model '{model_name}'")
     
-    import time
-    start_time = time.time()
-    
     try:
-        response_text = provider.generate(system_prompt, user_prompt)
-        latency = time.time() - start_time
-        log_message("INFO", f"LLM responded in {latency:.2f}s")
+        response_text = execute_llm_request_with_rate_limits(
+            provider_name, model_name, system_prompt, user_prompt, request_type="plan"
+        )
     except Exception as e:
-        latency = time.time() - start_time
-        log_message("ERROR", f"LLM call failed after {latency:.2f}s: {str(e)}")
         return PlannerResult(
             reply=f"I couldn't reach my planner engine. Error: {str(e)}",
             tool_calls=[]
@@ -348,12 +334,10 @@ def plan(message: str, player_context: PlayerContext) -> PlannerResult:
         )
         
         log_message("INFO", "Retrying LLM generation with auto-correction prompt...")
-        retry_start_time = time.time()
         try:
-            retry_response = provider.generate(system_prompt, correction_user_prompt)
-            retry_latency = time.time() - retry_start_time
-            log_message("INFO", f"Retry LLM responded in {retry_latency:.2f}s")
-            
+            retry_response = execute_llm_request_with_rate_limits(
+                provider_name, model_name, system_prompt, correction_user_prompt, request_type="plan"
+            )
             cleaned_retry = clean_markdown_json(retry_response)
             log_message("DEBUG", f"Cleaned retry response: {cleaned_retry}")
             

@@ -9,8 +9,14 @@ class MockProvider(BaseLLMProvider):
     """
     def __init__(self, model_name: str = "mock-model"):
         self.model_name = model_name
+        self.last_usage_metadata = None
 
     def generate(self, system_prompt: str, user_prompt: str) -> str:
+        # Populate mock usage metadata
+        self.last_usage_metadata = {
+            "prompt_tokens": (len(system_prompt) + len(user_prompt)) // 4,
+            "completion_tokens": 50
+        }
         # Check if the system prompt is for synthesis (ResponseGenerator)
         if "companion" in system_prompt.lower():
             if "shield" in user_prompt.lower():

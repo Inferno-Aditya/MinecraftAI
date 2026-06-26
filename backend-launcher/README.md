@@ -1,4 +1,4 @@
-# Minecraft AI Companion: Automatic Backend Launcher (v0.4.2)
+# Minecraft AI Companion: Automatic Backend Launcher (v0.4.3)
 
 The **Automatic Backend Launcher** is a standalone, lightweight Windows background utility that automates the lifecycle of the Minecraft AI Python backend. It eliminates the need to manually start or stop the backend command prompt windows.
 

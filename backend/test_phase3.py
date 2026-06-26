@@ -61,7 +61,12 @@ class TestPhase3(unittest.TestCase):
         })
         self.rg_config_patch.start()
 
+        self.sleep_patch = patch("time.sleep")
+        self.sleep_patch.start()
+
     def tearDown(self):
+        if hasattr(self, "sleep_patch"):
+            self.sleep_patch.stop()
         if hasattr(self, "config_patch"):
             self.config_patch.stop()
         if hasattr(self, "rg_config_patch"):
@@ -129,7 +134,8 @@ class TestPhase3(unittest.TestCase):
         calls = [tc.tool for tc in result]
         self.assertEqual(calls, ["list_locations"])
 
-    def test_gemini_provider_missing_key(self):
+    @patch("providers.gemini.load_dotenv")
+    def test_gemini_provider_missing_key(self, mock_load_dotenv):
         """Verify GeminiProvider raises a ValueError if GEMINI_API_KEY is missing."""
         with patch.dict(os.environ, {}, clear=True):
             provider = GeminiProvider()
