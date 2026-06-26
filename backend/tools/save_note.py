@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field, field_validator
-from typing import Dict, Any, Type
+from typing import Dict, Any, Type, List
 from .base import BaseTool
 
 try:
@@ -45,6 +45,14 @@ class SaveNoteTool(BaseTool):
     @property
     def input_schema(self) -> Type[BaseModel]:
         return SaveNoteInput
+
+    @property
+    def usage_examples(self) -> List[str]:
+        return [
+            "remember my favorite block is spruce",
+            "remember that my dog is named buddy",
+            "save note favorite_color as blue"
+        ]
 
     def execute(self, context: PlayerContext, arguments: Dict[str, Any]) -> Dict[str, Any]:
         """

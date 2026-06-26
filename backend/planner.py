@@ -1,4 +1,6 @@
-import re
+import os
+import json
+import datetime
 from pydantic import BaseModel, Field
 from typing import List
 
@@ -7,6 +9,22 @@ try:
 except ImportError:
     from .context import PlayerContext
 
+try:
+    from config import load_config
+except ImportError:
+    from .config import load_config
+
+try:
+    from providers import get_provider
+except ImportError:
+    from .providers import get_provider
+
+try:
+    from memory import get_memory_summary
+except ImportError:
+    from .memory import get_memory_summary
+
+
 class ToolCall(BaseModel):
     """
     Model representing a planned tool execution call.
@@ -14,67 +32,284 @@ class ToolCall(BaseModel):
     tool: str = Field(..., description="The name of the tool to be executed.")
     arguments: dict = Field(..., description="The dictionary of arguments to pass to the tool.")
 
-# Regex patterns for lightweight intent detection
-SAVE_LOCATION_PATTERNS = [
-    re.compile(r"^remember this place as\s+(.+)$", re.IGNORECASE),
-    re.compile(r"^save this place as\s+(.+)$", re.IGNORECASE),
-    re.compile(r"^remember this location as\s+(.+)$", re.IGNORECASE),
-    re.compile(r"^save this location as\s+(.+)$", re.IGNORECASE),
-]
 
-LOAD_LOCATION_PATTERNS = [
-    re.compile(r"^where is\s+(.+)$", re.IGNORECASE),
-    re.compile(r"^load location\s+(.+)$", re.IGNORECASE),
-    re.compile(r"^get location\s+(.+)$", re.IGNORECASE),
-]
-
-LIST_LOCATIONS_PATTERNS = [
-    re.compile(r"^list locations$", re.IGNORECASE),
-    re.compile(r"^show locations$", re.IGNORECASE),
-    re.compile(r"^what locations are saved$", re.IGNORECASE),
-]
-
-SAVE_NOTE_PATTERNS = [
-    re.compile(r"^remember my\s+(.+?)\s+is\s+(.+)$", re.IGNORECASE),
-    re.compile(r"^remember that\s+(.+?)\s+is\s+(.+)$", re.IGNORECASE),
-    re.compile(r"^save note\s+(.+?)\s+as\s+(.+)$", re.IGNORECASE),
-]
-
-def plan(message: str, player_context: PlayerContext) -> List[ToolCall]:
+class PlannerResult(BaseModel):
     """
-    Decides which tool(s) should run based on the user's message and player context.
-    Returns a list of ToolCall objects. Returns an empty list if no tool intent is detected.
-    Does not execute tools.
+    Result returned by the LLM Planner.
+    Encapsulates either a conversational reply or a list of tool calls to execute.
     """
-    msg = message.strip()
+    reply: str = Field(default="", description="Conversational reply when no tools are planned.")
+    tool_calls: List[ToolCall] = Field(default_factory=list, description="List of tool calls to execute.")
+
+    # Backwards compatibility methods to allow treating PlannerResult as a list of ToolCalls
+    def __len__(self) -> int:
+        return len(self.tool_calls)
+
+    def __getitem__(self, index):
+        return self.tool_calls[index]
+
+    def __iter__(self):
+        return iter(self.tool_calls)
+
+
+def get_tool_definitions() -> str:
+    """
+    Iterates over all registered tools in the ToolRegistry and
+    serializes their names, descriptions, input schemas, and usage examples.
+    """
+    try:
+        from tools.registry import registry
+    except ImportError:
+        from .tools.registry import registry
+
+    tools = registry.list_tools()
+    defs = []
+    for tool_name, tool in tools.items():
+        # Extract the JSON schema for validation and prompt injection
+        schema = tool.input_schema.model_json_schema()
+        properties = schema.get("properties", {})
+        required = schema.get("required", [])
+
+        # Format properties cleanly for LLM readability
+        clean_props = {}
+        for prop_name, prop_info in properties.items():
+            clean_props[prop_name] = {
+                "type": prop_info.get("type", "unknown"),
+                "description": prop_info.get("description", "")
+            }
+
+        examples_str = "\n".join(f"  - \"{ex}\"" for ex in tool.usage_examples)
+
+        tool_def = (
+            f"Tool: {tool.name}\n"
+            f"Description: {tool.description}\n"
+            f"Arguments Schema:\n{json.dumps(clean_props, indent=2)}\n"
+            f"Required Arguments: {required}\n"
+            f"Usage Examples:\n{examples_str}"
+        )
+        defs.append(tool_def)
+
+    return "\n\n---\n\n".join(defs)
+
+
+def build_system_prompt() -> str:
+    """
+    Builds the structured system prompt dynamically injecting available tools.
+    """
+    tool_defs = get_tool_definitions()
+    system_prompt = (
+        "You are the planning engine for an AI Minecraft assistant.\n"
+        "Your responsibility is ONLY to determine which tools should be executed.\n"
+        "You never execute tools yourself.\n"
+        "Only return valid JSON.\n"
+        "Never answer in natural language unless no tool is required.\n\n"
+        "Response JSON Schema:\n"
+        "{\n"
+        "  \"reply\": \"conversational message to the player if no tool is executed\",\n"
+        "  \"tool_calls\": [\n"
+        "    {\n"
+        "      \"tool\": \"tool_name\",\n"
+        "      \"arguments\": { ... }\n"
+        "    }\n"
+        "  ]\n"
+        "}\n\n"
+        "Instructions:\n"
+        "1. If the user's message matches the intent of one or more available tools, populate 'tool_calls' in order of execution. Set 'reply' to an empty string (\"\").\n"
+        "2. If no tool is required (e.g., player is just chatting, asking a question, or telling a joke), populate 'reply' with a conversational response, and set 'tool_calls' to an empty list [].\n"
+        "3. Never mix both. If 'tool_calls' contains elements, 'reply' must be empty (\"\").\n"
+        "4. Do not invent tools. Only use tools listed in the 'Available Tools' section.\n"
+        "5. Validate that the arguments match the schema of the tool exactly.\n\n"
+        "Available Tools:\n"
+        f"{tool_defs}"
+    )
+    return system_prompt
+
+
+def build_user_prompt(message: str, player_context: PlayerContext) -> str:
+    """
+    Builds the user prompt injecting PlayerContext and memory summaries.
+    """
+    memory_summary = get_memory_summary()
+    user_prompt = (
+        f"Player Name: {player_context.name}\n"
+        f"Current Location: X={player_context.x:.1f}, Y={player_context.y:.1f}, Z={player_context.z:.1f}\n"
+        f"Dimension: {player_context.dimension}\n"
+        f"Gamemode: {player_context.gamemode}\n"
+        f"Health: {player_context.health}/20\n"
+        f"Food Level: {player_context.food}/20\n"
+        f"Biome: {player_context.biome}\n"
+        f"World Time: {player_context.world_time} ticks\n\n"
+        f"Memory Summary:\n{memory_summary}\n\n"
+        f"User Message: {message}"
+    )
+    return user_prompt
+
+
+def log_prompt_debug(system_prompt: str, user_prompt: str) -> None:
+    """
+    Logs the generated prompts to logs/prompts/ for debug inspection.
+    """
+    try:
+        base_dir = os.path.dirname(os.path.dirname(__file__))
+        prompts_dir = os.path.join(base_dir, "logs", "prompts")
+        os.makedirs(prompts_dir, exist_ok=True)
+        
+        timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        filepath = os.path.join(prompts_dir, f"{timestamp}.txt")
+        
+        content = (
+            f"=== SYSTEM PROMPT ===\n{system_prompt}\n\n"
+            f"=== USER PROMPT ===\n{user_prompt}\n"
+        )
+        with open(filepath, "w", encoding="utf-8") as f:
+            f.write(content)
+    except Exception:
+        pass  # Gracefully ignore any logging IO issues to prevent crashes
+
+
+def parse_and_validate(cleaned_text: str) -> PlannerResult:
+    """
+    Parses a cleaned LLM JSON response and validates all tool names and schemas.
+    """
+    try:
+        data = json.loads(cleaned_text)
+    except Exception as e:
+        raise ValueError(f"Invalid JSON syntax: {str(e)}")
+
+    if not isinstance(data, dict):
+        raise ValueError("Root of JSON response must be an object.")
+
+    reply = data.get("reply", "")
+    if not isinstance(reply, str):
+        raise ValueError("field 'reply' must be a string.")
+
+    tool_calls_raw = data.get("tool_calls", [])
+    if not isinstance(tool_calls_raw, list):
+        raise ValueError("field 'tool_calls' must be a list.")
+
+    validated_calls = []
+    try:
+        from tools.registry import registry
+    except ImportError:
+        from .tools.registry import registry
+
+    for idx, tc in enumerate(tool_calls_raw):
+        if not isinstance(tc, dict):
+            raise ValueError(f"tool_calls[{idx}] must be a JSON object.")
+        if "tool" not in tc or "arguments" not in tc:
+            raise ValueError(f"tool_calls[{idx}] must contain 'tool' and 'arguments' keys.")
+        
+        tool_name = tc["tool"]
+        arguments = tc["arguments"]
+        
+        if not isinstance(tool_name, str):
+            raise ValueError(f"tool_calls[{idx}].tool must be a string.")
+        if not isinstance(arguments, dict):
+            raise ValueError(f"tool_calls[{idx}].arguments must be a JSON object.")
+
+        # Resolve tool
+        tool = registry.get_tool(tool_name)
+        if not tool:
+            raise ValueError(f"Tool '{tool_name}' is not registered in the registry.")
+
+        # Validate arguments
+        try:
+            tool.input_schema(**arguments)
+        except Exception as schema_err:
+            raise ValueError(f"Validation failed for tool '{tool_name}' arguments: {str(schema_err)}")
+
+        validated_calls.append(ToolCall(tool=tool_name, arguments=arguments))
+
+    return PlannerResult(reply=reply, tool_calls=validated_calls)
+
+
+def plan(message: str, player_context: PlayerContext) -> PlannerResult:
+    """
+    Decides which tool(s) should run based on the user's message, player context, and memory.
+    Uses the configured LLM provider to return a PlannerResult.
+    """
+    config = load_config()
+    provider_name = config.get("provider", "gemini")
+    model_name = config.get("model", "gemini-2.5-flash")
     
-    # Check save_location intent
-    for pattern in SAVE_LOCATION_PATTERNS:
-        match = pattern.match(msg)
-        if match:
-            name = match.group(1).strip()
-            return [ToolCall(tool="save_location", arguments={"name": name})]
+    try:
+        from main import log_message
+    except ImportError:
+        def log_message(level, msg):
+            print(f"[{level}] {msg}")
+
+    try:
+        provider = get_provider(provider_name, model_name)
+    except Exception as e:
+        log_message("ERROR", f"Failed to initialize LLM provider '{provider_name}': {str(e)}")
+        return PlannerResult(
+            reply=f"Error initializing LLM Provider '{provider_name}': {str(e)}",
+            tool_calls=[]
+        )
+
+    system_prompt = build_system_prompt()
+    user_prompt = build_user_prompt(message, player_context)
+    
+    if config.get("enable_prompt_logging", True):
+        log_prompt_debug(system_prompt, user_prompt)
+
+    log_message("INFO", f"Planning via provider '{provider_name}' using model '{model_name}'")
+    
+    import time
+    start_time = time.time()
+    
+    try:
+        response_text = provider.generate(system_prompt, user_prompt)
+        latency = time.time() - start_time
+        log_message("INFO", f"LLM responded in {latency:.2f}s")
+    except Exception as e:
+        latency = time.time() - start_time
+        log_message("ERROR", f"LLM call failed after {latency:.2f}s: {str(e)}")
+        return PlannerResult(
+            reply=f"I couldn't reach my planner engine. Error: {str(e)}",
+            tool_calls=[]
+        )
+
+    # Clean markdown block markers if any
+    def clean_markdown_json(text: str) -> str:
+        t = text.strip()
+        if t.startswith("```json"):
+            t = t[7:]
+        elif t.startswith("```"):
+            t = t[3:]
+        if t.endswith("```"):
+            t = t[:-3]
+        return t.strip()
+
+    cleaned_response = clean_markdown_json(response_text)
+    log_message("DEBUG", f"LLM Raw cleaned response: {cleaned_response}")
+
+    try:
+        return parse_and_validate(cleaned_response)
+    except Exception as parse_err:
+        log_message("WARNING", f"Initial LLM response parsing/validation failed: {str(parse_err)}")
+        
+        # Retry exactly once with correction prompt
+        correction_user_prompt = (
+            f"Your previous response failed parsing/validation with error:\n{str(parse_err)}\n\n"
+            f"Here is your previous response:\n{response_text}\n\n"
+            f"Please correct it and return ONLY valid JSON matching the schema."
+        )
+        
+        log_message("INFO", "Retrying LLM generation with auto-correction prompt...")
+        retry_start_time = time.time()
+        try:
+            retry_response = provider.generate(system_prompt, correction_user_prompt)
+            retry_latency = time.time() - retry_start_time
+            log_message("INFO", f"Retry LLM responded in {retry_latency:.2f}s")
             
-    # Check load_location intent
-    for pattern in LOAD_LOCATION_PATTERNS:
-        match = pattern.match(msg)
-        if match:
-            name = match.group(1).strip()
-            return [ToolCall(tool="load_location", arguments={"name": name})]
+            cleaned_retry = clean_markdown_json(retry_response)
+            log_message("DEBUG", f"Cleaned retry response: {cleaned_retry}")
             
-    # Check list_locations intent
-    for pattern in LIST_LOCATIONS_PATTERNS:
-        match = pattern.match(msg)
-        if match:
-            return [ToolCall(tool="list_locations", arguments={})]
-            
-    # Check save_note intent
-    for pattern in SAVE_NOTE_PATTERNS:
-        match = pattern.match(msg)
-        if match:
-            # We replace spaces in the key with underscores to ensure clean key indexing (e.g. favorite block -> favorite_block)
-            key = match.group(1).strip().replace(" ", "_")
-            value = match.group(2).strip()
-            return [ToolCall(tool="save_note", arguments={"key": key, "value": value})]
-            
-    return []
+            return parse_and_validate(cleaned_retry)
+        except Exception as retry_err:
+            log_message("ERROR", f"Correction retry failed or timed out: {str(retry_err)}")
+            return PlannerResult(
+                reply="I couldn't understand the planner response.",
+                tool_calls=[]
+            )

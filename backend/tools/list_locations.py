@@ -1,5 +1,5 @@
 from pydantic import BaseModel
-from typing import Dict, Any, Type
+from typing import Dict, Any, Type, List
 from .base import BaseTool
 
 try:
@@ -28,6 +28,14 @@ class ListLocationsTool(BaseTool):
     @property
     def input_schema(self) -> Type[BaseModel]:
         return ListLocationsInput
+
+    @property
+    def usage_examples(self) -> List[str]:
+        return [
+            "list locations",
+            "show locations",
+            "what locations are saved"
+        ]
 
     def execute(self, context: PlayerContext, arguments: Dict[str, Any]) -> Dict[str, Any]:
         """

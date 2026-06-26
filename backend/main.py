@@ -11,9 +11,9 @@ except ImportError:
     from .context import PlayerContext
 
 try:
-    from planner import plan, ToolCall
+    from planner import plan, ToolCall, PlannerResult
 except ImportError:
-    from .planner import plan, ToolCall
+    from .planner import plan, ToolCall, PlannerResult
 
 try:
     from tools import registry
@@ -65,111 +65,52 @@ async def chat_endpoint(request: ChatRequest):
     player = request.player
 
     # 1. Planner decision
-    planned_calls = plan(message, player)
-    
-    if planned_calls:
-        # We have a tool call planned
-        tool_call = planned_calls[0]  # Regex planner returns at most 1 tool call
-        
-        # Log planner decision separately
-        log_message("INFO", f"Planner selected {tool_call.tool.upper()}")
-        
-        # Format logging for tool execution
-        if tool_call.tool in ["save_location", "load_location"]:
-            log_arg = tool_call.arguments.get("name", "")
-        elif tool_call.tool == "save_note":
-            log_arg = tool_call.arguments.get("key", "")
-        elif tool_call.tool == "list_locations":
-            log_arg = ""
-        else:
-            log_arg = str(tool_call.arguments)
-            
-        log_exec_str = f"{tool_call.tool.upper()}({log_arg})"
-        # Log every tool execution
-        log_message("INFO", log_exec_str)
-        
-        # Execute tool via the registry
-        result = registry.execute(tool_call.tool, player, tool_call.arguments)
-        
-        if result["status"] == "error":
-            log_message("ERROR", f"Tool execution failed: {result['message']}")
-            
+    try:
+        planned_result = plan(message, player)
+    except Exception as e:
+        log_message("ERROR", f"Planner exception: {str(e)}")
         return ChatResponse(
-            reply=result["message"],
-            tool_calls=planned_calls
+            reply=f"[Backend Error: Planner failed: {str(e)}]",
+            tool_calls=[]
+        )
+    
+    # 2. Execution Engine
+    if planned_result.tool_calls:
+        # Execute every ToolCall in order
+        replies = []
+        for tool_call in planned_result.tool_calls:
+            log_message("INFO", f"Planner selected {tool_call.tool.upper()}")
+            
+            # Format argument description for logging
+            if tool_call.tool in ["save_location", "load_location"]:
+                log_arg = tool_call.arguments.get("name", "")
+            elif tool_call.tool == "save_note":
+                log_arg = tool_call.arguments.get("key", "")
+            elif tool_call.tool == "list_locations":
+                log_arg = ""
+            else:
+                log_arg = str(tool_call.arguments)
+                
+            log_exec_str = f"{tool_call.tool.upper()}({log_arg})"
+            log_message("INFO", log_exec_str)
+            
+            # Execute tool via the registry
+            result = registry.execute(tool_call.tool, player, tool_call.arguments)
+            
+            if result["status"] == "error":
+                log_message("ERROR", f"Tool execution failed: {result['message']}")
+                
+            replies.append(result["message"])
+            
+        combined_reply = "\n".join(replies)
+        return ChatResponse(
+            reply=combined_reply,
+            tool_calls=planned_result.tool_calls
         )
 
-    # 2. LLM Provider or Mock fallback if no tool is planned
-    provider = os.getenv("AI_PROVIDER", "").lower()
-    gemini_key = os.getenv("GEMINI_API_KEY")
-    openai_key = os.getenv("OPENAI_API_KEY")
-
-    reply_text = ""
-
-    # Gemini Integration
-    if provider == "gemini" and gemini_key:
-        try:
-            import google.generativeai as genai
-            genai.configure(api_key=gemini_key)
-            model = genai.GenerativeModel("gemini-1.5-flash")
-            
-            system_prompt = (
-                f"You are a helpful AI assistant inside Minecraft playing with {player.name}. "
-                f"Here is the player's context:\n"
-                f"- Position: X={player.x:.1f}, Y={player.y:.1f}, Z={player.z:.1f}\n"
-                f"- Dimension: {player.dimension}\n"
-                f"- Gamemode: {player.gamemode}\n"
-                f"- Health: {player.health}/20\n"
-                f"- Food Level: {player.food}/20\n"
-                f"- Biome: {player.biome}\n"
-                f"- World Time: {player.world_time}\n"
-                f"Answer the player's message in a short, friendly, conversational tone (Minecraft chat format)."
-            )
-            response = model.generate_content([system_prompt, message])
-            reply_text = response.text.strip()
-        except Exception as e:
-            reply_text = f"[Backend Error: Gemini API failed: {str(e)}]"
-
-    # OpenAI Integration
-    elif provider == "openai" and openai_key:
-        try:
-            from openai import OpenAI
-            client = OpenAI(api_key=openai_key)
-            
-            system_prompt = (
-                f"You are a helpful AI assistant inside Minecraft playing with {player.name}. "
-                f"Here is the player's context:\n"
-                f"- Position: X={player.x:.1f}, Y={player.y:.1f}, Z={player.z:.1f}\n"
-                f"- Dimension: {player.dimension}\n"
-                f"- Gamemode: {player.gamemode}\n"
-                f"- Health: {player.health}/20\n"
-                f"- Food Level: {player.food}/20\n"
-                f"- Biome: {player.biome}\n"
-                f"- World Time: {player.world_time}\n"
-                f"Answer the player's message in a short, friendly, conversational tone."
-            )
-            
-            completion = client.chat.completions.create(
-                model="gpt-4o-mini",
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": message}
-                ]
-            )
-            reply_text = completion.choices[0].message.content.strip()
-        except Exception as e:
-            reply_text = f"[Backend Error: OpenAI API failed: {str(e)}]"
-
-    # Mock Fallback
-    else:
-        reply_text = (
-            f"Hello, {player.name}! This is the local backend. I received your message: '{message}'.\n"
-            f"Context: Location: {player.x:.1f}, {player.y:.1f}, {player.z:.1f} in {player.dimension} "
-            f"({player.biome} biome), Health: {player.health:.1f}/20.0, Gamemode: {player.gamemode}."
-        )
-
+    # 3. Conversational Response
     return ChatResponse(
-        reply=reply_text,
+        reply=planned_result.reply,
         tool_calls=[]
     )
 

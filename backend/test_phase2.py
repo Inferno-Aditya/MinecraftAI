@@ -38,8 +38,21 @@ class TestPhase2(unittest.TestCase):
             world_time=1000,
             biome="minecraft:forest"
         )
+        
+        # Patch configuration to run tests with the MockProvider
+        from unittest.mock import patch
+        self.config_patcher = patch("planner.load_config", return_value={
+            "provider": "mock",
+            "model": "mock-model",
+            "enable_prompt_logging": False
+        })
+        self.config_patcher.start()
 
     def tearDown(self):
+        # Stop the configuration patcher
+        if hasattr(self, "config_patcher"):
+            self.config_patcher.stop()
+
         # Restore original memory.json file if one was backed up
         if os.path.exists(MEMORY_FILE):
             try:

@@ -60,3 +60,33 @@ def save_memory(data: Dict[str, Any]) -> None:
             except Exception:
                 pass
         raise e
+
+def get_memory_summary() -> str:
+    """
+    Generates a concise summary of the locations and notes stored in memory.
+    Designed to scale as memory grows.
+    """
+    try:
+        mem = load_memory()
+    except Exception:
+        mem = {"locations": {}, "notes": {}, "preferences": {}}
+        
+    lines = []
+    
+    locations = list(mem.get("locations", {}).keys())
+    if locations:
+        lines.append("Known Locations:")
+        for loc in sorted(locations):
+            lines.append(f"- {loc}")
+    else:
+        lines.append("Known Locations: None")
+        
+    notes = mem.get("notes", {})
+    if notes:
+        lines.append("\nKnown Notes:")
+        for key, val in sorted(notes.items()):
+            lines.append(f"- {key}={val}")
+    else:
+        lines.append("\nKnown Notes: None")
+        
+    return "\n".join(lines)

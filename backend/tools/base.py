@@ -1,6 +1,6 @@
 from abc import ABC, abstractmethod
 from pydantic import BaseModel
-from typing import Dict, Any, Type
+from typing import Dict, Any, Type, List
 
 try:
     from context import PlayerContext
@@ -29,6 +29,12 @@ class BaseTool(ABC):
     @abstractmethod
     def input_schema(self) -> Type[BaseModel]:
         """Pydantic model representing the expected arguments for the tool."""
+        pass
+
+    @property
+    @abstractmethod
+    def usage_examples(self) -> List[str]:
+        """A list of typical natural language phrases that trigger this tool."""
         pass
 
     @abstractmethod

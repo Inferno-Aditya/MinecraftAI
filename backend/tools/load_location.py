@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field, field_validator
-from typing import Dict, Any, Type
+from typing import Dict, Any, Type, List
 from .base import BaseTool
 
 try:
@@ -35,6 +35,14 @@ class LoadLocationTool(BaseTool):
     @property
     def input_schema(self) -> Type[BaseModel]:
         return LoadLocationInput
+
+    @property
+    def usage_examples(self) -> List[str]:
+        return [
+            "where is home",
+            "load location base",
+            "get location mine"
+        ]
 
     def execute(self, context: PlayerContext, arguments: Dict[str, Any]) -> Dict[str, Any]:
         """
