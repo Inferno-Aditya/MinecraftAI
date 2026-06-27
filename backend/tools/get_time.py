@@ -1,6 +1,6 @@
 from pydantic import BaseModel
 from typing import Dict, Any, Type, List
-from .base import BaseTool
+from .base import BaseTool, ToolResult
 
 try:
     from context import PlayerContext
@@ -42,11 +42,15 @@ class GetTimeTool(BaseTool):
             "show the time and moon phase"
         ]
 
-    def execute(self, context: PlayerContext, arguments: Dict[str, Any]) -> Dict[str, Any]:
-        env = context.environment
-        ticks = env.world_time
-        day_night = "Day" if env.is_day else "Night"
-        phase_name = MOON_PHASES.get(env.moon_phase, f"Unknown ({env.moon_phase})")
+    def execute(self, context: PlayerContext, arguments: Dict[str, Any]) -> ToolResult:
+        env = getattr(context, "environment", None)
+        ticks = getattr(env, "world_time", 0) if env else 0
+        is_day = getattr(env, "is_day", True) if env else True
+        is_night = getattr(env, "is_night", False) if env else False
+        moon_phase = getattr(env, "moon_phase", 0) if env else 0
+        
+        day_night = "Day" if is_day else "Night"
+        phase_name = MOON_PHASES.get(moon_phase, f"Unknown ({moon_phase})")
         
         # Calculate in-game clock time: 0 is 06:00 (sunrise), 6000 is 12:00 (noon), 18000 is 00:00 (midnight)
         time_in_day = ticks % 24000
@@ -56,17 +60,16 @@ class GetTimeTool(BaseTool):
 
         msg = f"World Time: {ticks} ticks (Clock: {formatted_time}, State: {day_night}). Moon phase is {phase_name}."
 
-        return {
-            "status": "success",
-            "message": msg,
-            "success": True,
-            "data": {
+        return ToolResult(
+            success=True,
+            message=msg,
+            data={
                 "world_ticks": ticks,
-                "is_day": env.is_day,
-                "is_night": env.is_night,
-                "moon_phase": env.moon_phase,
+                "is_day": is_day,
+                "is_night": is_night,
+                "moon_phase": moon_phase,
                 "moon_phase_name": phase_name,
                 "clock_time": formatted_time
             },
-            "metadata": {}
-        }
+            tool_name=self.name
+        )

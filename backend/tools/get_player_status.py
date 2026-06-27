@@ -1,6 +1,6 @@
 from pydantic import BaseModel
 from typing import Dict, Any, Type, List
-from .base import BaseTool
+from .base import BaseTool, ToolResult
 
 try:
     from context import PlayerContext
@@ -31,39 +31,46 @@ class GetPlayerStatusTool(BaseTool):
             "show my health and coordinates"
         ]
 
-    def execute(self, context: PlayerContext, arguments: Dict[str, Any]) -> Dict[str, Any]:
-        info = context.player_info
+    def execute(self, context: PlayerContext, arguments: Dict[str, Any]) -> ToolResult:
+        info = getattr(context, "player_info", None)
+        if not info:
+            return ToolResult(
+                success=False,
+                message="Error: Player state is not available.",
+                error="Missing player_info",
+                tool_name=self.name
+            )
+            
         data = {
-            "name": info.name,
-            "uuid": info.uuid,
+            "name": getattr(info, "name", "Player"),
+            "uuid": getattr(info, "uuid", ""),
             "coordinates": {
-                "x": round(info.x, 2),
-                "y": round(info.y, 2),
-                "z": round(info.z, 2)
+                "x": round(getattr(info, "x", 0.0), 2),
+                "y": round(getattr(info, "y", 64.0), 2),
+                "z": round(getattr(info, "z", 0.0), 2)
             },
             "rotation": {
-                "yaw": round(info.yaw, 2),
-                "pitch": round(info.pitch, 2)
+                "yaw": round(getattr(info, "yaw", 0.0), 2),
+                "pitch": round(getattr(info, "pitch", 0.0), 2)
             },
-            "health": round(info.health, 2),
-            "hunger": info.food,
-            "saturation": round(info.saturation, 2),
-            "experience": round(info.experience, 2),
-            "level": info.level,
-            "gamemode": info.gamemode,
-            "dimension": info.dimension
+            "health": round(getattr(info, "health", 20.0), 2),
+            "hunger": getattr(info, "food", 20),
+            "saturation": round(getattr(info, "saturation", 5.0), 2),
+            "experience": round(getattr(info, "experience", 0.0), 2),
+            "level": getattr(info, "level", 0),
+            "gamemode": getattr(info, "gamemode", "survival"),
+            "dimension": getattr(info, "dimension", "minecraft:overworld")
         }
         
         status_msg = (
-            f"Player {info.name} status: Health {info.health:.1f}/20, Hunger {info.food}/20, "
-            f"Level {info.level}, Gamemode {info.gamemode}, Dimension {info.dimension} "
-            f"at X={info.x:.1f}, Y={info.y:.1f}, Z={info.z:.1f}."
+            f"Player {data['name']} status: Health {data['health']:.1f}/20, Hunger {data['hunger']}/20, "
+            f"Level {data['level']}, Gamemode {data['gamemode']}, Dimension {data['dimension']} "
+            f"at X={data['coordinates']['x']:.1f}, Y={data['coordinates']['y']:.1f}, Z={data['coordinates']['z']:.1f}."
         )
 
-        return {
-            "status": "success",
-            "message": status_msg,
-            "success": True,
-            "data": data,
-            "metadata": {}
-        }
+        return ToolResult(
+            success=True,
+            message=status_msg,
+            data=data,
+            tool_name=self.name
+        )

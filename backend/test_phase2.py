@@ -41,17 +41,46 @@ class TestPhase2(unittest.TestCase):
         
         # Patch configuration to run tests with the MockProvider
         from unittest.mock import patch
+        from model_manager import ModelManager, ModelProfile
+        
+        mock_profile = ModelProfile(
+            model_id="mock-model",
+            name="Mock Model (Testing)",
+            provider="mock",
+            description="Mock model for testing",
+            rpm=60,
+            rpd=86400,
+            context_window=32768,
+            output_token_limit=4096,
+            recommended_usage="Testing"
+        )
+        
         self.config_patcher = patch("planner.load_config", return_value={
             "provider": "mock",
             "model": "mock-model",
             "enable_prompt_logging": False
         })
         self.config_patcher.start()
+        
+        self.model_patch = patch.object(ModelManager, "get_active_model", return_value="mock-model")
+        self.model_patch.start()
+        
+        self.provider_patch = patch.object(ModelManager, "get_active_provider", return_value="mock")
+        self.provider_patch.start()
+        
+        self.profile_patch = patch.object(ModelManager, "get_active_model_profile", return_value=mock_profile)
+        self.profile_patch.start()
 
     def tearDown(self):
         # Stop the configuration patcher
         if hasattr(self, "config_patcher"):
             self.config_patcher.stop()
+        if hasattr(self, "model_patch"):
+            self.model_patch.stop()
+        if hasattr(self, "provider_patch"):
+            self.provider_patch.stop()
+        if hasattr(self, "profile_patch"):
+            self.profile_patch.stop()
 
         # Restore original memory.json file if one was backed up
         if os.path.exists(MEMORY_FILE):

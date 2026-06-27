@@ -1,6 +1,6 @@
 from pydantic import BaseModel, Field, field_validator
 from typing import Dict, Any, Type, List
-from .base import BaseTool
+from .base import BaseTool, ToolResult
 
 try:
     from context import PlayerContext
@@ -41,7 +41,7 @@ class GetNearbyBlocksTool(BaseTool):
             "show nearby blocks"
         ]
 
-    def execute(self, context: PlayerContext, arguments: Dict[str, Any]) -> Dict[str, Any]:
+    def execute(self, context: PlayerContext, arguments: Dict[str, Any]) -> ToolResult:
         radius = arguments.get("radius", 16)
         
         # Call scanning helper
@@ -62,8 +62,8 @@ class GetNearbyBlocksTool(BaseTool):
         msg = f"Blocks within radius {radius}:\n" + "\n".join(msg_parts) if msg_parts else f"No blocks detected in radius {radius}."
         
         # Extract metadata from cache
-        hits = context._cache.get("cache_hits", 0)
-        misses = context._cache.get("cache_misses", 0)
+        cache = getattr(context, "_cache", {}) or {}
+        hits = cache.get("cache_hits", 0)
         cache_status = "hit" if hits > 0 else "miss"
 
         metadata = {
@@ -73,12 +73,12 @@ class GetNearbyBlocksTool(BaseTool):
             "cache": cache_status
         }
 
-        return {
-            "status": "success",
-            "message": msg,
-            "success": True,
-            "data": {
-                "blocks": data_list
+        return ToolResult(
+            success=True,
+            message=msg,
+            data={
+                "blocks": data_list,
+                "metadata": metadata
             },
-            "metadata": metadata
-        }
+            tool_name=self.name
+        )

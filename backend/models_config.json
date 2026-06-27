@@ -1,0 +1,42 @@
+{
+  "default_model": "gemma-4-31b-it",
+  "metadata": {
+    "gemma-4-31b-it": {
+      "name": "Gemma 4 32B",
+      "recommended": true,
+      "badge": "Default",
+      "icon": "🤖",
+      "default_temperature": 0.7,
+      "recommended_usage": "Open weights experimentation and default model"
+    },
+    "gemini-2.5-flash": {
+      "name": "Gemini 2.5 Flash",
+      "recommended": true,
+      "badge": "Recommended",
+      "icon": "⚡",
+      "default_temperature": 0.7,
+      "recommended_usage": "Default general-purpose planning and perception tasks"
+    },
+    "gemini-3.1-flash-lite": {
+      "name": "Gemini 3.1 Flash Lite",
+      "badge": "Fast",
+      "icon": "🍃",
+      "default_temperature": 0.7,
+      "recommended_usage": "Fast perception updates and simple gameplay commands"
+    },
+    "gemini-5.5-flash": {
+      "name": "Gemini 5.5 Flash",
+      "badge": "Advanced",
+      "icon": "🔥",
+      "default_temperature": 0.7,
+      "recommended_usage": "Highly complex planning, combat strategies, and multi-step reasoning"
+    },
+    "mock-model": {
+      "name": "Mock Model (Testing)",
+      "badge": "Mock",
+      "icon": "🛠️",
+      "default_temperature": 0.7,
+      "recommended_usage": "Offline debugging, unit testing, and rate limiting validation"
+    }
+  }
+}

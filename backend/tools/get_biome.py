@@ -1,6 +1,6 @@
 from pydantic import BaseModel
 from typing import Dict, Any, Type, List
-from .base import BaseTool
+from .base import BaseTool, ToolResult
 
 try:
     from context import PlayerContext
@@ -31,22 +31,41 @@ class GetBiomeTool(BaseTool):
             "what is the temperature and biome?"
         ]
 
-    def execute(self, context: PlayerContext, arguments: Dict[str, Any]) -> Dict[str, Any]:
-        biome = context.environment.biome
+    def execute(self, context: PlayerContext, arguments: Dict[str, Any]) -> ToolResult:
+        env = getattr(context, "environment", None)
+        biome = getattr(env, "biome", None) if env else None
+        
+        if not biome:
+            return ToolResult(
+                success=True,
+                message="You are currently in an unknown biome.",
+                data={
+                    "name": "unknown",
+                    "category": "unknown",
+                    "temperature": 0.0,
+                    "rainfall": 0.0
+                },
+                tool_name=self.name
+            )
+            
+        b_name = getattr(biome, "name", "unknown")
+        b_cat = getattr(biome, "category", "unknown")
+        b_temp = getattr(biome, "temperature", 0.0)
+        b_rain = getattr(biome, "rainfall", 0.0)
+        
         msg = (
-            f"You are currently in the biome '{biome.name}' "
-            f"(Category: {biome.category}, Temperature: {biome.temperature:.2f}, Rainfall: {biome.rainfall:.2f})."
+            f"You are currently in the biome '{b_name}' "
+            f"(Category: {b_cat}, Temperature: {b_temp:.2f}, Rainfall: {b_rain:.2f})."
         )
 
-        return {
-            "status": "success",
-            "message": msg,
-            "success": True,
-            "data": {
-                "name": biome.name,
-                "category": biome.category,
-                "temperature": biome.temperature,
-                "rainfall": biome.rainfall
+        return ToolResult(
+            success=True,
+            message=msg,
+            data={
+                "name": b_name,
+                "category": b_cat,
+                "temperature": b_temp,
+                "rainfall": b_rain
             },
-            "metadata": {}
-        }
+            tool_name=self.name
+        )

@@ -1,7 +1,8 @@
 import datetime
 from pydantic import BaseModel, Field, field_validator
 from typing import Dict, Any, Type, List
-from .base import BaseTool
+from .base import BaseTool, ToolResult
+# ... (rest unchanged until execute)
 
 try:
     from context import PlayerContext
@@ -70,8 +71,10 @@ class SaveLocationTool(BaseTool):
         memory["locations"][name] = location_entry
         save_memory(memory)
         
-        return {
-            "status": "success",
-            "message": f"Saved location '{name}' at coordinates x={context.x:.1f}, y={context.y:.1f}, z={context.z:.1f} in {context.dimension}.",
-            "data": location_entry
-        }
+        return ToolResult(
+            success=True,
+            message=f"Saved location '{name}' at coordinates x={context.x:.1f}, y={context.y:.1f}, z={context.z:.1f} in {context.dimension}.",
+            data=location_entry,
+            tool_name=self.name
+        )
+

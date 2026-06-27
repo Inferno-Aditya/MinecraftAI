@@ -1,11 +1,40 @@
 from abc import ABC, abstractmethod
-from pydantic import BaseModel
-from typing import Dict, Any, Type, List
+from pydantic import BaseModel, Field
+from typing import Dict, Any, Type, List, Optional
 
 try:
     from context import PlayerContext
 except ImportError:
     from ..context import PlayerContext
+
+class ToolResult(BaseModel):
+    """
+    Standardized return format for all Minecraft tools.
+    Supports dictionary emulation for backward compatibility.
+    """
+    success: bool = Field(..., description="True if the tool executed successfully, False otherwise.")
+    message: str = Field(..., description="A friendly natural language message summarizing the result.")
+    data: Dict[str, Any] = Field(default_factory=dict, description="Structured query results or context details.")
+    error: Optional[str] = Field(None, description="The error message or exception details if success is False.")
+    execution_time_ms: Optional[float] = Field(None, description="Time taken to execute the tool in milliseconds.")
+    tool_name: str = Field(..., description="The canonical name of the tool.")
+
+    def __getitem__(self, item: str) -> Any:
+        # Backward compatibility translation: status maps to success boolean as "success" or "error"
+        if item == "status":
+            return "success" if self.success else "error"
+        if hasattr(self, item):
+            return getattr(self, item)
+        # Transparent fallback to data dictionary keys
+        if item in self.data:
+            return self.data[item]
+        raise KeyError(item)
+
+    def get(self, key: str, default: Any = None) -> Any:
+        try:
+            return self[key]
+        except KeyError:
+            return default
 
 class BaseTool(ABC):
     """
@@ -38,13 +67,12 @@ class BaseTool(ABC):
         pass
 
     @abstractmethod
-    def execute(self, context: PlayerContext, arguments: Dict[str, Any]) -> Dict[str, Any]:
+    def execute(self, context: PlayerContext, arguments: Dict[str, Any]) -> ToolResult:
         """
         Executes the tool with the provided player context and validated arguments.
         
         :param context: PlayerContext object containing current game and player state.
         :param arguments: Dictionary of arguments validated against input_schema.
-        :return: A dictionary representing the structured success or error response.
-                 Must contain 'status' (success/error), 'message' (str), and optional 'data'.
+        :return: A ToolResult representing the standardized tool outcome.
         """
         pass

@@ -39,3 +39,8 @@ backend/usage_stats.json
 *.swp
 Thumbs.db
 .DS_Store
+
+# Temporary files and caches
+backend/discovered_models_cache.json
+backend/test_out.txt
+*.png

@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [v0.4.8] - 2026-06-27
+
+### Added (v0.4.8 Release)
+- **Intelligent Intent Classifier**: Configuration-driven routing using `intent_classifier_config.json`, confidence thresholds, regular plurals matching, and synonym resolution.
+- **Planner Routing Validation**: Added a validation layer inside `planner.py` to prevent silent overrides and check strategy/tool consistency.
+- **Decision Reasoning Diagnostics**: Added detailed explainability metrics (`strategy_source`, `strategy_validation`, `override_applied`, and `decision_reason`) to `RequestContext` and debug logging.
+- **Regression Protection Framework**: Developed `run_validation_report.py` to execute a 100% offline regression test suite and write detailed summaries.
+- **Launcher & Dashboard Lifecycle Improvements**: Integrates automatic backend management, health monitoring, and manual controls.
+
+---
+
 ## [v0.4.3] - 2026-06-26
 
 ### Added (Phase 4A.3 Release)

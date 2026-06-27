@@ -47,6 +47,20 @@ class TestPhase3(unittest.TestCase):
         )
         
         # Use MockProvider for all tests in this file
+        from model_manager import ModelManager, ModelProfile
+        
+        mock_profile = ModelProfile(
+            model_id="mock-model",
+            name="Mock Model (Testing)",
+            provider="mock",
+            description="Mock model for testing",
+            rpm=60,
+            rpd=86400,
+            context_window=32768,
+            output_token_limit=4096,
+            recommended_usage="Testing"
+        )
+
         self.config_patch = patch("planner.load_config", return_value={
             "provider": "mock",
             "model": "mock-model",
@@ -60,6 +74,15 @@ class TestPhase3(unittest.TestCase):
             "enable_prompt_logging": False
         })
         self.rg_config_patch.start()
+        
+        self.model_patch = patch.object(ModelManager, "get_active_model", return_value="mock-model")
+        self.model_patch.start()
+        
+        self.provider_patch = patch.object(ModelManager, "get_active_provider", return_value="mock")
+        self.provider_patch.start()
+        
+        self.profile_patch = patch.object(ModelManager, "get_active_model_profile", return_value=mock_profile)
+        self.profile_patch.start()
 
         self.sleep_patch = patch("time.sleep")
         self.sleep_patch.start()
@@ -71,6 +94,12 @@ class TestPhase3(unittest.TestCase):
             self.config_patch.stop()
         if hasattr(self, "rg_config_patch"):
             self.rg_config_patch.stop()
+        if hasattr(self, "model_patch"):
+            self.model_patch.stop()
+        if hasattr(self, "provider_patch"):
+            self.provider_patch.stop()
+        if hasattr(self, "profile_patch"):
+            self.profile_patch.stop()
             
         # Restore memory
         if os.path.exists(MEMORY_FILE):

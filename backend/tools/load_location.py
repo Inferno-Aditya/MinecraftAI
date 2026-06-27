@@ -1,6 +1,6 @@
 from pydantic import BaseModel, Field, field_validator
 from typing import Dict, Any, Type, List
-from .base import BaseTool
+from .base import BaseTool, ToolResult
 
 try:
     from context import PlayerContext
@@ -44,7 +44,7 @@ class LoadLocationTool(BaseTool):
             "get location mine"
         ]
 
-    def execute(self, context: PlayerContext, arguments: Dict[str, Any]) -> Dict[str, Any]:
+    def execute(self, context: PlayerContext, arguments: Dict[str, Any]) -> ToolResult:
         """
         Loads the location context.
         If the location does not exist in memory, returns a structured error response.
@@ -54,14 +54,17 @@ class LoadLocationTool(BaseTool):
         memory = load_memory()
         
         if name not in memory["locations"]:
-            return {
-                "status": "error",
-                "message": f"Location '{name}' is not saved."
-            }
+            return ToolResult(
+                success=False,
+                message=f"Location '{name}' is not saved.",
+                error="Location not saved",
+                tool_name=self.name
+            )
             
         location_entry = memory["locations"][name]
-        return {
-            "status": "success",
-            "message": f"Loaded location '{name}': coordinates are x={location_entry['x']:.1f}, y={location_entry['y']:.1f}, z={location_entry['z']:.1f} in {location_entry['dimension']}.",
-            "data": location_entry
-        }
+        return ToolResult(
+            success=True,
+            message=f"Loaded location '{name}': coordinates are x={location_entry['x']:.1f}, y={location_entry['y']:.1f}, z={location_entry['z']:.1f} in {location_entry['dimension']}.",
+            data=location_entry,
+            tool_name=self.name
+        )

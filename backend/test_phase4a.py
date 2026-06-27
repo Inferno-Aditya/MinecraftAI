@@ -102,6 +102,20 @@ class TestPhase4A(unittest.TestCase):
         self.context = PlayerContext.model_validate(self.context_data)
         
         # Patch config for planning tests
+        from model_manager import ModelManager, ModelProfile
+        
+        mock_profile = ModelProfile(
+            model_id="mock-model",
+            name="Mock Model (Testing)",
+            provider="mock",
+            description="Mock model for testing",
+            rpm=60,
+            rpd=86400,
+            context_window=32768,
+            output_token_limit=4096,
+            recommended_usage="Testing"
+        )
+
         self.config_patcher = patch("planner.load_config", return_value={
             "provider": "mock",
             "model": "mock-model",
@@ -116,10 +130,25 @@ class TestPhase4A(unittest.TestCase):
             "enable_prompt_logging": False
         })
         self.rg_config_patcher.start()
+        
+        self.model_patch = patch.object(ModelManager, "get_active_model", return_value="mock-model")
+        self.model_patch.start()
+        
+        self.provider_patch = patch.object(ModelManager, "get_active_provider", return_value="mock")
+        self.provider_patch.start()
+        
+        self.profile_patch = patch.object(ModelManager, "get_active_model_profile", return_value=mock_profile)
+        self.profile_patch.start()
 
     def tearDown(self):
         self.config_patcher.stop()
         self.rg_config_patcher.stop()
+        if hasattr(self, "model_patch"):
+            self.model_patch.stop()
+        if hasattr(self, "provider_patch"):
+            self.provider_patch.stop()
+        if hasattr(self, "profile_patch"):
+            self.profile_patch.stop()
 
     def test_backward_compatibility_flat_context(self):
         """Verify that PlayerContext model validator correctly parses flat Phase 3 context."""
@@ -482,6 +511,46 @@ class TestPhase4A(unittest.TestCase):
         self.assertEqual(data["tool_calls"][0]["tool"], "get_inventory")
         # Synthesized reply from mock provider
         self.assertIn("Yes, you can craft a shield", data["reply"])
+
+    def test_controlled_verification_queries(self):
+        """
+        Controlled test cases from Phase 4B request to verify routing for all tools.
+        """
+        queries = {
+            "What biome am I in?": "get_biome",
+            "What's my health?": "get_health",
+            "What item am I holding?": "get_held_item",
+            "What dimension am I in?": "get_dimension",
+            "What's the world time?": "get_world_time",
+            "Are there any mobs near me?": "get_nearby_entities",
+            "Are there any Endermen nearby?": "get_nearby_entities",
+            "What blocks surround me?": "get_nearby_blocks",
+            "What's in my inventory?": "get_inventory",
+            "Where is the nearest water?": "find_nearest"
+        }
+        
+        client = TestClient(app)
+        for msg, expected_tool in queries.items():
+            request_data = {
+                "message": msg,
+                "player": self.context.model_dump(),
+                "memory": {}
+            }
+            response = client.post("/chat", json=request_data)
+            self.assertEqual(response.status_code, 200)
+            
+            data = response.json()
+            self.assertTrue(
+                len(data["tool_calls"]) > 0,
+                f"Query '{msg}' did not trigger any tool calls."
+            )
+            
+            triggered_tools = [tc["tool"] for tc in data["tool_calls"]]
+            self.assertIn(
+                expected_tool,
+                triggered_tools,
+                f"Query '{msg}' expected to trigger '{expected_tool}', but triggered {triggered_tools}."
+            )
 
 if __name__ == "__main__":
     unittest.main()

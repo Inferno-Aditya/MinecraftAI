@@ -7,11 +7,15 @@ class MockProvider(BaseLLMProvider):
     Mock LLM provider for unit tests and offline/mock mode.
     Simulates a planning LLM by returning structured JSON tool calls or conversational replies.
     """
-    def __init__(self, model_name: str = "mock-model"):
-        self.model_name = model_name
+    def __init__(self, model_name: str = None):
+        try:
+            from model_manager import model_manager
+        except ImportError:
+            from ..model_manager import model_manager
+        self.model_name = model_name or model_manager.get_active_model()
         self.last_usage_metadata = None
 
-    def generate(self, system_prompt: str, user_prompt: str) -> str:
+    def generate(self, system_prompt: str, user_prompt: str, ctx=None) -> str:
         # Populate mock usage metadata
         self.last_usage_metadata = {
             "prompt_tokens": (len(system_prompt) + len(user_prompt)) // 4,
@@ -70,6 +74,63 @@ class MockProvider(BaseLLMProvider):
             
         if msg == "simulate rate limiting":
             raise Exception("429 Too Many Requests / Rate limit exceeded")
+
+        # --- v0.4.8 E2E Validation and Regression Queries ---
+        if re.search(r"how am i doing|how's my health|am i okay|what's my condition|am i injured|do i need food", msg, re.IGNORECASE):
+            return json.dumps({
+                "response_strategy": "TOOLS",
+                "tool_calls": [{"tool": "get_health", "arguments": {}}, {"tool": "get_food", "arguments": {}}],
+                "reply": ""
+            })
+        if re.search(r"should i fight|can i take this fight|should i run|am i safe right now", msg, re.IGNORECASE):
+            return json.dumps({
+                "response_strategy": "HYBRID",
+                "tool_calls": [{"tool": "get_health", "arguments": {}}, {"tool": "get_food", "arguments": {}}, {"tool": "get_nearby_entities", "arguments": {}}],
+                "reply": ""
+            })
+        if re.search(r"sleep|safe to sleep", msg, re.IGNORECASE):
+            return json.dumps({
+                "response_strategy": "HYBRID",
+                "tool_calls": [{"tool": "get_time", "arguments": {}}, {"tool": "get_nearby_entities", "arguments": {}}],
+                "reply": ""
+            })
+        if re.search(r"anything scary nearby|hostile mobs nearby", msg, re.IGNORECASE):
+            return json.dumps({
+                "response_strategy": "TOOLS",
+                "tool_calls": [{"tool": "get_nearby_entities", "arguments": {}}],
+                "reply": ""
+            })
+        if re.search(r"how's everything looking", msg, re.IGNORECASE):
+            return json.dumps({
+                "response_strategy": "TOOLS",
+                "tool_calls": [{"tool": "scan_area", "arguments": {"radius": 16}}],
+                "reply": ""
+            })
+        if re.search(r"where did i save my mining base|where is Home\??", msg, re.IGNORECASE):
+            name = "mining base" if "mining base" in msg.lower() else "Home"
+            return json.dumps({
+                "response_strategy": "TOOLS",
+                "tool_calls": [{"tool": "load_location", "arguments": {"name": name}}],
+                "reply": ""
+            })
+        if re.search(r"take me back (?:to my )?home", msg, re.IGNORECASE):
+            return json.dumps({
+                "response_strategy": "TOOLS",
+                "tool_calls": [{"tool": "load_location", "arguments": {"name": "home"}}],
+                "reply": ""
+            })
+        if re.search(r"how do i craft a Brewing Stand\??", msg, re.IGNORECASE):
+            return json.dumps({
+                "response_strategy": "KNOWLEDGE",
+                "reply": "A Brewing Stand is crafted using 1 Blaze Rod and 3 Cobblestone.",
+                "tool_calls": []
+            })
+        if re.search(r"save this location as Home\??", msg, re.IGNORECASE):
+            return json.dumps({
+                "response_strategy": "TOOLS",
+                "tool_calls": [{"tool": "save_location", "arguments": {"name": "Home"}}],
+                "reply": ""
+            })
 
         # --- Phase 4A.1 New Knowledge-Only Queries ---
         if re.search(r"critical hits", msg, re.IGNORECASE):
@@ -227,6 +288,14 @@ class MockProvider(BaseLLMProvider):
                 "reply": ""
             })
 
+        # get_world_time
+        if re.search(r"world time|world_time", msg, re.IGNORECASE):
+            return json.dumps({
+                "response_strategy": "TOOLS",
+                "tool_calls": [{"tool": "get_world_time", "arguments": {}}],
+                "reply": ""
+            })
+
         # get_time
         if re.search(r"time|day or night|ticks|moon phase", msg, re.IGNORECASE):
             return json.dumps({
@@ -254,7 +323,7 @@ class MockProvider(BaseLLMProvider):
             })
 
         # get_nearby_entities
-        if re.search(r"entities|monsters|mobs|zombie|players nearby", msg, re.IGNORECASE):
+        if re.search(r"entities|monsters|mobs|zombie|players nearby|endermen|enderman", msg, re.IGNORECASE):
             return json.dumps({
                 "response_strategy": "TOOLS",
                 "tool_calls": [{"tool": "get_nearby_entities", "arguments": {}}],
@@ -262,7 +331,7 @@ class MockProvider(BaseLLMProvider):
             })
 
         # get_nearby_blocks
-        if re.search(r"blocks around me|nearby blocks", msg, re.IGNORECASE):
+        if re.search(r"blocks around me|nearby blocks|blocks surround me", msg, re.IGNORECASE):
             return json.dumps({
                 "response_strategy": "TOOLS",
                 "tool_calls": [{"tool": "get_nearby_blocks", "arguments": {"radius": 16}}],
@@ -282,6 +351,40 @@ class MockProvider(BaseLLMProvider):
             return json.dumps({
                 "response_strategy": "TOOLS",
                 "tool_calls": [{"tool": "get_biome", "arguments": {}}],
+                "reply": ""
+            })
+
+        # get_health
+        if re.search(r"health|hp", msg, re.IGNORECASE):
+            return json.dumps({
+                "response_strategy": "TOOLS",
+                "tool_calls": [{"tool": "get_health", "arguments": {}}],
+                "reply": ""
+            })
+
+        # get_food
+        if re.search(r"food|hungry|hunger", msg, re.IGNORECASE):
+            return json.dumps({
+                "response_strategy": "TOOLS",
+                "tool_calls": [{"tool": "get_food", "arguments": {}}],
+                "reply": ""
+            })
+
+        # get_dimension
+        if re.search(r"dimension", msg, re.IGNORECASE):
+            return json.dumps({
+                "response_strategy": "TOOLS",
+                "tool_calls": [{"tool": "get_dimension", "arguments": {}}],
+                "reply": ""
+            })
+
+
+
+        # get_player_info
+        if re.search(r"player info|player_info|coords and dimension", msg, re.IGNORECASE):
+            return json.dumps({
+                "response_strategy": "TOOLS",
+                "tool_calls": [{"tool": "get_player_info", "arguments": {}}],
                 "reply": ""
             })
 

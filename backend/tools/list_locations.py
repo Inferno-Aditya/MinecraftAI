@@ -1,6 +1,6 @@
 from pydantic import BaseModel
 from typing import Dict, Any, Type, List
-from .base import BaseTool
+from .base import BaseTool, ToolResult
 
 try:
     from context import PlayerContext
@@ -37,7 +37,7 @@ class ListLocationsTool(BaseTool):
             "what locations are saved"
         ]
 
-    def execute(self, context: PlayerContext, arguments: Dict[str, Any]) -> Dict[str, Any]:
+    def execute(self, context: PlayerContext, arguments: Dict[str, Any]) -> ToolResult:
         """
         Lists all saved location names in memory.
         """
@@ -45,15 +45,17 @@ class ListLocationsTool(BaseTool):
         locations = list(memory["locations"].keys())
         
         if not locations:
-            return {
-                "status": "success",
-                "message": "No locations saved yet.",
-                "data": {"locations": []}
-            }
+            return ToolResult(
+                success=True,
+                message="No locations saved yet.",
+                data={"locations": []},
+                tool_name=self.name
+            )
             
         locations_str = ", ".join(locations)
-        return {
-            "status": "success",
-            "message": f"Saved locations: {locations_str}.",
-            "data": {"locations": locations}
-        }
+        return ToolResult(
+            success=True,
+            message=f"Saved locations: {locations_str}.",
+            data={"locations": locations},
+            tool_name=self.name
+        )

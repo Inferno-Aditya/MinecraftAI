@@ -1,6 +1,6 @@
 from pydantic import BaseModel
 from typing import Dict, Any, Type, List
-from .base import BaseTool
+from .base import BaseTool, ToolResult
 
 try:
     from context import PlayerContext
@@ -31,33 +31,47 @@ class GetWeatherTool(BaseTool):
             "check weather"
         ]
 
-    def execute(self, context: PlayerContext, arguments: Dict[str, Any]) -> Dict[str, Any]:
-        weather = context.environment.weather
+    def execute(self, context: PlayerContext, arguments: Dict[str, Any]) -> ToolResult:
+        env = getattr(context, "environment", None)
+        weather = getattr(env, "weather", None) if env else None
         
+        if not weather:
+            return ToolResult(
+                success=True,
+                message="Weather status: Clear (Default).",
+                data={
+                    "rain": False,
+                    "thunder": False,
+                    "clear": True,
+                    "time_remaining_ticks": 0,
+                    "time_remaining_seconds": 0.0
+                },
+                tool_name=self.name
+            )
+            
         status_parts = []
-        if weather.thunder:
+        if getattr(weather, "thunder", False):
             status_parts.append("Thundering")
-        if weather.rain:
+        if getattr(weather, "rain", False):
             status_parts.append("Raining")
-        if weather.clear:
+        if getattr(weather, "clear", True) and not status_parts:
             status_parts.append("Clear")
             
-        weather_desc = " and ".join(status_parts)
-        time_rem_ticks = weather.time_remaining
+        weather_desc = " and ".join(status_parts) if status_parts else "Clear"
+        time_rem_ticks = getattr(weather, "time_remaining", 0)
         time_rem_sec = round(time_rem_ticks / 20.0, 1)
         
         msg = f"Weather is currently: {weather_desc}. Approximately {time_rem_sec} seconds remaining."
 
-        return {
-            "status": "success",
-            "message": msg,
-            "success": True,
-            "data": {
-                "rain": weather.rain,
-                "thunder": weather.thunder,
-                "clear": weather.clear,
-                "time_remaining_ticks": weather.time_remaining,
+        return ToolResult(
+            success=True,
+            message=msg,
+            data={
+                "rain": getattr(weather, "rain", False),
+                "thunder": getattr(weather, "thunder", False),
+                "clear": getattr(weather, "clear", True),
+                "time_remaining_ticks": time_rem_ticks,
                 "time_remaining_seconds": time_rem_sec
             },
-            "metadata": {}
-        }
+            tool_name=self.name
+        )

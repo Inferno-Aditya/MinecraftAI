@@ -1,6 +1,10 @@
 import time
 from typing import List, Dict, Any, Optional
-from context import PlayerContext, NearbyBlock, FillerBlockSummary, InterestingBlock
+
+try:
+    from context import PlayerContext, NearbyBlock, FillerBlockSummary, InterestingBlock
+except ImportError:
+    from ..context import PlayerContext, NearbyBlock, FillerBlockSummary, InterestingBlock
 
 def get_blocks_in_radius(context: PlayerContext, radius: int) -> List[NearbyBlock]:
     """
@@ -32,51 +36,75 @@ def get_blocks_in_radius(context: PlayerContext, radius: int) -> List[NearbyBloc
 
     blocks_map = {}
 
+    # Extract nested context properties with graceful fallbacks
+    env = getattr(context, "environment", None)
+    nb_snapshot = getattr(env, "nearby_blocks", None) if env else None
+    
     # 1. Process filler blocks
-    for b_type, summary in context.environment.nearby_blocks.filler_blocks.items():
-        count = summary.counts.get(tier_key, 0)
-        if count > 0:
-            nearest_coord = None
-            if summary.nearest:
-                nearest_coord = [
-                    int(context.player_info.x + summary.nearest[0]),
-                    int(context.player_info.y + summary.nearest[1]),
-                    int(context.player_info.z + summary.nearest[2])
-                ]
-            blocks_map[b_type] = NearbyBlock(
-                type=b_type,
-                count=count,
-                nearest=nearest_coord
-            )
+    filler_blocks = getattr(nb_snapshot, "filler_blocks", {}) or {}
+    if isinstance(filler_blocks, dict):
+        for b_type, summary in filler_blocks.items():
+            if not summary:
+                continue
+            counts = getattr(summary, "counts", {}) or {}
+            count = counts.get(tier_key, 0)
+            if count > 0:
+                nearest_coord = None
+                nearest_rel = getattr(summary, "nearest", None)
+                if nearest_rel and len(nearest_rel) >= 3:
+                    px = getattr(context.player_info, "x", 0.0)
+                    py = getattr(context.player_info, "y", 64.0)
+                    pz = getattr(context.player_info, "z", 0.0)
+                    nearest_coord = [
+                        int(px + nearest_rel[0]),
+                        int(py + nearest_rel[1]),
+                        int(pz + nearest_rel[2])
+                    ]
+                blocks_map[b_type] = NearbyBlock(
+                    type=b_type,
+                    count=count,
+                    nearest=nearest_coord
+                )
 
     # 2. Process interesting blocks (filter exactly using Chebyshev distance)
-    for b in context.environment.nearby_blocks.interesting_blocks:
-        dx, dy, dz = b.x, b.y, b.z
-        dist = max(abs(dx), abs(dy), abs(dz))
-        if dist <= radius:
-            abs_coord = [
-                int(context.player_info.x + dx),
-                int(context.player_info.y + dy),
-                int(context.player_info.z + dz)
-            ]
-            if b.type not in blocks_map:
-                blocks_map[b.type] = NearbyBlock(
-                    type=b.type,
-                    count=1,
-                    nearest=abs_coord
-                )
-            else:
-                blocks_map[b.type].count += 1
-                curr_nearest = blocks_map[b.type].nearest
-                if curr_nearest:
-                    curr_dx = curr_nearest[0] - context.player_info.x
-                    curr_dy = curr_nearest[1] - context.player_info.y
-                    curr_dz = curr_nearest[2] - context.player_info.z
-                    curr_dist = max(abs(curr_dx), abs(curr_dy), abs(curr_dz))
-                    if dist < curr_dist:
-                        blocks_map[b.type].nearest = abs_coord
+    interesting_blocks = getattr(nb_snapshot, "interesting_blocks", []) or []
+    if isinstance(interesting_blocks, list):
+        for b in interesting_blocks:
+            if not b:
+                continue
+            dx = getattr(b, "x", 0)
+            dy = getattr(b, "y", 0)
+            dz = getattr(b, "z", 0)
+            b_type = getattr(b, "type", "minecraft:air")
+            
+            dist = max(abs(dx), abs(dy), abs(dz))
+            if dist <= radius:
+                px = getattr(context.player_info, "x", 0.0)
+                py = getattr(context.player_info, "y", 64.0)
+                pz = getattr(context.player_info, "z", 0.0)
+                abs_coord = [
+                    int(px + dx),
+                    int(py + dy),
+                    int(pz + dz)
+                ]
+                if b_type not in blocks_map:
+                    blocks_map[b_type] = NearbyBlock(
+                        type=b_type,
+                        count=1,
+                        nearest=abs_coord
+                    )
                 else:
-                    blocks_map[b.type].nearest = abs_coord
+                    blocks_map[b_type].count += 1
+                    curr_nearest = blocks_map[b_type].nearest
+                    if curr_nearest:
+                        curr_dx = curr_nearest[0] - px
+                        curr_dy = curr_nearest[1] - py
+                        curr_dz = curr_nearest[2] - pz
+                        curr_dist = max(abs(curr_dx), abs(curr_dy), abs(curr_dz))
+                        if dist < curr_dist:
+                            blocks_map[b_type].nearest = abs_coord
+                    else:
+                        blocks_map[b_type].nearest = abs_coord
 
     results = list(blocks_map.values())
     context._cache[cache_key] = results
@@ -100,10 +128,17 @@ def get_entities_in_radius(context: PlayerContext, radius: float) -> List[Any]:
     context._cache["cache_misses"] = context._cache.get("cache_misses", 0) + 1
     start_time = time.time()
 
-    filtered_entities = [
-        e for e in context.environment.nearby_entities
-        if e.distance <= radius
-    ]
+    env = getattr(context, "environment", None)
+    entities = getattr(env, "nearby_entities", []) or []
+    
+    filtered_entities = []
+    if isinstance(entities, list):
+        for e in entities:
+            if not e:
+                continue
+            dist = getattr(e, "distance", 999.0)
+            if dist <= radius:
+                filtered_entities.append(e)
     
     context._cache[cache_key] = filtered_entities
     
@@ -127,7 +162,7 @@ def calculate_direction(px: float, pz: float, py: float, tx: float, tz: float, t
         
     # Calculate yaw angle
     import math
-    # In Minecraft, positive Z is South, negative Z is North, positive X is East, negative X is West
+    # In Minecraft, Z+ is South, Z- is North, X+ is East, X- is West
     angle = math.atan2(dz, dx) * 180 / math.pi
     # map angle to directions
     if -135 <= angle < -45:

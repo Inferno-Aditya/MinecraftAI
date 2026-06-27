@@ -1,6 +1,6 @@
 from typing import Dict, Any, Optional, Type
 from pydantic import ValidationError, BaseModel
-from .base import BaseTool
+from .base import BaseTool, ToolResult
 from .save_location import SaveLocationTool
 from .load_location import LoadLocationTool
 from .list_locations import ListLocationsTool
@@ -19,6 +19,13 @@ from .scan_area import ScanAreaTool
 from .find_nearest import FindNearestTool
 from .get_nearby_entities import GetNearbyEntitiesTool
 from .get_biome import GetBiomeTool
+
+# New tools for Phase 4 Audit
+from .get_player_info import GetPlayerInfoTool
+from .get_health import GetHealthTool
+from .get_food import GetFoodTool
+from .get_dimension import GetDimensionTool
+from .get_world_time import GetWorldTimeTool
 
 try:
     from context import PlayerContext
@@ -46,7 +53,38 @@ class ToolRegistry:
         """Returns all registered tools."""
         return self._tools
 
-    def execute(self, tool_name: str, context: PlayerContext, arguments: Dict[str, Any]) -> Dict[str, Any]:
+    def validate_all(self) -> None:
+        """
+        Performs startup validation on all registered tools.
+        Ensures each tool has a valid schema, unique identifier, callable execute function, and matching metadata.
+        Raises ValueError if any tool is invalid.
+        """
+        names_seen = set()
+        for name, tool in list(self._tools.items()):
+            if not name or not isinstance(name, str) or not name.strip():
+                raise ValueError("Tool validation failed: canonical identifier (name) must be a non-empty string.")
+            
+            if name in names_seen:
+                raise ValueError(f"Tool validation failed: duplicate tool name '{name}' detected.")
+            names_seen.add(name)
+
+            if not hasattr(tool, "description") or not isinstance(tool.description, str) or not tool.description.strip():
+                raise ValueError(f"Tool validation failed for '{name}': description must be a non-empty string.")
+
+            if not hasattr(tool, "input_schema") or not issubclass(tool.input_schema, BaseModel):
+                raise ValueError(f"Tool validation failed for '{name}': input_schema must be a subclass of pydantic.BaseModel.")
+
+            if not hasattr(tool, "usage_examples") or not isinstance(tool.usage_examples, list) or len(tool.usage_examples) == 0:
+                raise ValueError(f"Tool validation failed for '{name}': usage_examples must be a non-empty list of strings.")
+
+            for idx, ex in enumerate(tool.usage_examples):
+                if not isinstance(ex, str) or not ex.strip():
+                    raise ValueError(f"Tool validation failed for '{name}': usage_example at index {idx} must be a non-empty string.")
+
+            if not hasattr(tool, "execute") or not callable(tool.execute):
+                raise ValueError(f"Tool validation failed for '{name}': execute must be a callable function.")
+
+    def execute(self, tool_name: str, context: PlayerContext, arguments: Dict[str, Any]) -> ToolResult:
         """
         Executes a registered tool.
         
@@ -54,14 +92,17 @@ class ToolRegistry:
         2. Validates arguments using the tool's input_schema.
         3. Invokes the tool's execute() method with context and validated arguments.
         
-        Returns a structured success/error response dictionary.
+        Returns a ToolResult.
         """
         tool = self.get_tool(tool_name)
         if not tool:
-            return {
-                "status": "error",
-                "message": f"Tool '{tool_name}' not resolved in registry."
-            }
+            err_msg = f"Tool '{tool_name}' not resolved in registry."
+            return ToolResult(
+                success=False,
+                message=err_msg,
+                error=err_msg,
+                tool_name=tool_name
+            )
         
         try:
             # Validate input arguments against tool's Pydantic model
@@ -75,15 +116,21 @@ class ToolRegistry:
             for err in e.errors():
                 loc = " -> ".join(str(l) for l in err["loc"])
                 error_details.append(f"{loc}: {err['msg']}")
-            return {
-                "status": "error",
-                "message": f"Validation failed for tool '{tool_name}': {'; '.join(error_details)}"
-            }
+            err_msg = f"Validation failed for tool '{tool_name}': {'; '.join(error_details)}"
+            return ToolResult(
+                success=False,
+                message=err_msg,
+                error=err_msg,
+                tool_name=tool_name
+            )
         except Exception as e:
-            return {
-                "status": "error",
-                "message": f"Execution error in tool '{tool_name}': {str(e)}"
-            }
+            err_msg = f"Execution error in tool '{tool_name}': {str(e)}"
+            return ToolResult(
+                success=False,
+                message=err_msg,
+                error=str(e),
+                tool_name=tool_name
+            )
 
 # Instantiate global registry and register Phase 2 & Phase 4A tools
 registry = ToolRegistry()
@@ -107,3 +154,13 @@ registry.register(ScanAreaTool())
 registry.register(FindNearestTool())
 registry.register(GetNearbyEntitiesTool())
 registry.register(GetBiomeTool())
+
+# New tools for Phase 4 Audit
+registry.register(GetPlayerInfoTool())
+registry.register(GetHealthTool())
+registry.register(GetFoodTool())
+registry.register(GetDimensionTool())
+registry.register(GetWorldTimeTool())
+
+# Run automatic startup validation
+registry.validate_all()

@@ -1,6 +1,6 @@
 from pydantic import BaseModel
 from typing import Dict, Any, Type, List
-from .base import BaseTool
+from .base import BaseTool, ToolResult
 
 try:
     from context import PlayerContext
@@ -31,41 +31,42 @@ class GetHeldItemTool(BaseTool):
             "what is in my hand?"
         ]
 
-    def execute(self, context: PlayerContext, arguments: Dict[str, Any]) -> Dict[str, Any]:
-        held = context.player_info.held_item
-        if not held or held.item == "minecraft:air" or held.count == 0:
-            return {
-                "status": "success",
-                "message": "You are not holding any item.",
-                "success": True,
-                "data": {
+    def execute(self, context: PlayerContext, arguments: Dict[str, Any]) -> ToolResult:
+        info = getattr(context, "player_info", None)
+        held = getattr(info, "held_item", None) if info else None
+        
+        if not held or getattr(held, "item", "minecraft:air") == "minecraft:air" or getattr(held, "count", 0) == 0:
+            return ToolResult(
+                success=True,
+                message="You are not holding any item.",
+                data={
                     "item": "minecraft:air",
                     "count": 0,
                     "durability": 0,
                     "enchantments": {}
                 },
-                "metadata": {}
-            }
+                tool_name=self.name
+            )
             
         data = {
             "item": held.item,
             "count": held.count,
             "durability": held.durability if held.durability is not None else 0,
-            "enchantments": held.enchantments
+            "enchantments": getattr(held, "enchantments", {}) or {}
         }
 
         ench_str = ""
-        if held.enchantments:
-            ench_str = " (Enchantments: " + ", ".join(f"{k} {v}" for k, v in held.enchantments.items()) + ")"
+        enchantments = data["enchantments"]
+        if enchantments:
+            ench_str = " (Enchantments: " + ", ".join(f"{k} {v}" for k, v in enchantments.items()) + ")"
 
-        msg = f"Holding {held.count}x {held.item}{ench_str}."
-        if held.durability is not None and held.durability > 0:
-            msg += f" Durability: {held.durability} remaining."
+        msg = f"Holding {data['count']}x {data['item']}{ench_str}."
+        if data["durability"] > 0:
+            msg += f" Durability: {data['durability']} remaining."
 
-        return {
-            "status": "success",
-            "message": msg,
-            "success": True,
-            "data": data,
-            "metadata": {}
-        }
+        return ToolResult(
+            success=True,
+            message=msg,
+            data=data,
+            tool_name=self.name
+        )

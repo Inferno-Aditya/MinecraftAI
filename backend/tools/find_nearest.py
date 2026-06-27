@@ -1,6 +1,6 @@
 from pydantic import BaseModel, Field, field_validator
 from typing import Dict, Any, Type, List, Optional
-from .base import BaseTool
+from .base import BaseTool, ToolResult
 
 try:
     from context import PlayerContext
@@ -45,10 +45,13 @@ class FindNearestTool(BaseTool):
             "locate a sheep"
         ]
 
-    def execute(self, context: PlayerContext, arguments: Dict[str, Any]) -> Dict[str, Any]:
+    def execute(self, context: PlayerContext, arguments: Dict[str, Any]) -> ToolResult:
         target = arguments["target_type"].strip().lower()
         
-        px, py, pz = context.player_info.x, context.player_info.y, context.player_info.z
+        info = getattr(context, "player_info", None)
+        px = getattr(info, "x", 0.0) if info else 0.0
+        py = getattr(info, "y", 64.0) if info else 64.0
+        pz = getattr(info, "z", 0.0) if info else 0.0
         
         # 1. Search blocks
         closest_block = None
@@ -57,7 +60,7 @@ class FindNearestTool(BaseTool):
         # Scan blocks with max radius 64
         nearby_blocks = get_blocks_in_radius(context, 64)
         for nb in nearby_blocks:
-            # Match target against block ID (e.g. "minecraft:diamond_ore" contains "diamond")
+            # Match target against block ID
             if target in nb.type.lower() and nb.nearest:
                 tx, ty, tz = nb.nearest
                 # Chebyshev distance relative to player
@@ -73,9 +76,14 @@ class FindNearestTool(BaseTool):
         nearby_entities = get_entities_in_radius(context, 64.0)
         for e in nearby_entities:
             # Match target against entity type, name or category
-            if (target in e.type.lower()) or (target in e.name.lower()) or (target in e.category.lower()):
-                if e.distance < closest_entity_dist:
-                    closest_entity_dist = e.distance
+            e_type = getattr(e, "type", "").lower()
+            e_name = getattr(e, "name", "").lower()
+            e_cat = getattr(e, "category", "").lower()
+            e_dist = getattr(e, "distance", 999.0)
+            
+            if (target in e_type) or (target in e_name) or (target in e_cat):
+                if e_dist < closest_entity_dist:
+                    closest_entity_dist = e_dist
                     closest_entity = e
 
         # 3. Compare block vs entity
@@ -95,20 +103,25 @@ class FindNearestTool(BaseTool):
             msg = f"Found nearest block '{closest_block.type}' at coordinates {data['coordinates']} ({data['distance']} blocks away, direction: {direction})."
             
         elif closest_entity:
-            tx, ty, tz = closest_entity.x, closest_entity.y, closest_entity.z
+            tx = getattr(closest_entity, "x", 0.0)
+            ty = getattr(closest_entity, "y", 64.0)
+            tz = getattr(closest_entity, "z", 0.0)
+            e_type = getattr(closest_entity, "type", "")
+            e_name = getattr(closest_entity, "name", "")
+            
             direction = calculate_direction(px, pz, py, tx, tz, ty)
             
             data = {
                 "found": True,
                 "type": "entity",
-                "id": closest_entity.type,
-                "name": closest_entity.name,
+                "id": e_type,
+                "name": e_name,
                 "coordinates": [round(tx, 2), round(ty, 2), round(tz, 2)],
                 "distance": round(closest_entity_dist, 1),
                 "direction": direction,
                 "confidence": 1.0
             }
-            msg = f"Found nearest entity '{closest_entity.name}' ({closest_entity.type}) at coordinates {data['coordinates']} ({data['distance']} blocks away, direction: {direction})."
+            msg = f"Found nearest entity '{e_name}' ({e_type}) at coordinates {data['coordinates']} ({data['distance']} blocks away, direction: {direction})."
             
         else:
             data = {
@@ -120,13 +133,9 @@ class FindNearestTool(BaseTool):
             }
             msg = f"Could not find any block or entity matching '{target}' within a 64-block radius."
 
-        return {
-            "status": "success",
-            "message": msg,
-            "success": data.get("found", False),
-            "data": data,
-            "metadata": {
-                "target_query": target,
-                "scan_radius": 64
-            }
-        }
+        return ToolResult(
+            success=data.get("found", False),
+            message=msg,
+            data=data,
+            tool_name=self.name
+        )

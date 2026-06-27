@@ -1,6 +1,6 @@
 from pydantic import BaseModel, Field, field_validator
 from typing import Dict, Any, Type, List
-from .base import BaseTool
+from .base import BaseTool, ToolResult
 
 try:
     from context import PlayerContext
@@ -54,7 +54,7 @@ class SaveNoteTool(BaseTool):
             "save note favorite_color as blue"
         ]
 
-    def execute(self, context: PlayerContext, arguments: Dict[str, Any]) -> Dict[str, Any]:
+    def execute(self, context: PlayerContext, arguments: Dict[str, Any]) -> ToolResult:
         """
         Stores the note.
         Replaces any existing note with the same key. Key is normalized (spaces replaced by underscores).
@@ -66,8 +66,9 @@ class SaveNoteTool(BaseTool):
         memory["notes"][key] = value
         save_memory(memory)
         
-        return {
-            "status": "success",
-            "message": f"Saved note for '{key}': '{value}'.",
-            "data": {"key": key, "value": value}
-        }
+        return ToolResult(
+            success=True,
+            message=f"Saved note for '{key}': '{value}'.",
+            data={"key": key, "value": value},
+            tool_name=self.name
+        )

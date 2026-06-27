@@ -34,7 +34,8 @@ def load_config() -> dict:
     Loads runtime configuration from config.json.
     Merges with DEFAULT_CONFIG to ensure all keys are present.
     """
-    config = DEFAULT_CONFIG.copy()
+    import copy
+    config = copy.deepcopy(DEFAULT_CONFIG)
     if os.path.exists(CONFIG_FILE):
         try:
             with open(CONFIG_FILE, "r", encoding="utf-8") as f:

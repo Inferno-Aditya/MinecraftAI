@@ -10,7 +10,7 @@
 ![Python](https://img.shields.io/badge/Python-3.10%2B-blue?logo=python)
 ![FastAPI](https://img.shields.io/badge/FastAPI-0.100%2B-teal?logo=fastapi)
 ![Gemini](https://img.shields.io/badge/Gemini-3.5--flash-purple?logo=google)
-![Version](https://img.shields.io/badge/Version-v0.4.3-blue?logo=github)
+![Version](https://img.shields.io/badge/Version-v0.4.8-blue?logo=github)
 ![License](https://img.shields.io/badge/License-MIT-yellow)
 
 ---
@@ -100,6 +100,35 @@ Here is a visual overview of the React Dashboard interface demonstrating telemet
 ---
 
 ## Architecture
+
+### Core Pipeline Flowchart
+```
+User Query
+    ↓
+Intent Classifier
+    ↓
+Intent Confidence Check (with fallback threshold)
+    ↓
+Planner Strategy Selection (KNOWLEDGE / TOOLS / HYBRID)
+    ↓
+Decision Validation Layer (Contradiction Checks)
+    ↓
+Candidate Tool Ranking
+    ↓
+Final Tool Selection
+    ↓
+Tool Execution (using validated Python scripts)
+    ↓
+Hybrid Response Generator (context synthesis, if required)
+    ↓
+LLM Provider Call
+    ↓
+Final Response
+    ↓
+Telemetry & Diagnostics (RequestContext Logging)
+    ↓
+Minecraft UI Chat Output
+```
 
 ### System Flow
 ```mermaid
@@ -1023,6 +1052,44 @@ Contributions are welcome. Please follow the conventions already established in 
 - **Extensibility is structural, not accidental.** Adding a new tool, a new LLM provider, or a new memory category does not require modifying existing files — only adding new ones and registering them in the registry.
 - **Fail gracefully, always.** Every network call, file operation, JSON parse, and schema validation is wrapped to return a user-visible message rather than crash the game or the server.
 - **Offline-first testing.** The `MockProvider` and test isolation mean the entire backend can be developed and tested without a Minecraft instance or an API key.
+
+## Current Capabilities
+
+The Minecraft AI Assistant currently supports the following capabilities and tool perceptions:
+
+- **Player Status Perceptions**: Coordinates (`x`, `y`, `z`), health status, food/hunger status, saturation, experience progress, levels, active gamemode, dimension (`minecraft:overworld`, `minecraft:the_nether`, `minecraft:the_end`), held item detection, and equipped gear (helmet, chestplate, leggings, boots, offhand shield).
+- **World Context Perceptions**: Weather (rain, thunder, clear states), world time ticks (day/night phases), light levels (block, sky, and combined light levels), and biome categories (temperature, category name, precipitation).
+- **Environment Perceptions**: High-performance local scans for surrounding blocks (caching for multiple tools), search queries to find the nearest target block or entity, and entities scanning (detecting villagers, hostile/passive mobs, vehicle types, projectiles, and players in a 64-block radius).
+- **Memory System**: Local coordinates saving/retrieval as custom waypoints (e.g. `mining base`, `Home`), text memos saving, and listing all saved memories.
+- **Hybrid Reasoning**: Synthesis of live game context and internal Minecraft crafting/recipe and survival domain knowledge to answer queries like "Should I fight these mobs?", "Is it safe to sleep?", or "Can I craft a Brewing Stand right now?".
+
+---
+
+## Developer Features
+
+MinecraftAI includes several advanced developer features for debugging, profiling, and verification:
+
+- **Planner Debug Log**: Detailed in-console printouts containing matched intent patterns, vocabulary components (mobs, items, blocks, structures), final intent confidence scores, candidate tool rankings, chosen planner decisions, rejected tools with specific reasons, and prompt template injection logs.
+- **Diagnostics & Observability Layer**: An integrated `RequestContext` tracking system capturing model performance metrics, input/output token counts, and moving average query latency.
+- **Validation Report Suite**: Fully offline, deterministic validation suite (`run_validation_report.py`) evaluating 10 target benchmark queries against 6 pipeline stages (Intent Classification, Strategy Selection, Candidate Tool Ranking, Final Tool Selection, Tool Execution, Response Generation), printing out a formatted markdown report.
+- **Model Manager**: Configuration manager dynamically loading model profiles (`models_config.json`) with fine-grained API rate limits (RPM, TPM, RPD) and automated proactive check queueing.
+- **Lifecycle Service Manager**: Standalone Windows executable orchestrating process health, Heartbeat checks, and automatic restart handling.
+
+---
+
+## Known Issues
+
+### Hybrid Response Generation
+Under certain hybrid queries requiring a second LLM synthesis pass, the backend may occasionally terminate unexpectedly, causing the launcher to automatically restart the backend process.
+
+* **Current Status**: Active investigation in progress. Core planner, classifier, and tool execution remain fully operational. The issue appears isolated to the secondary response generation stage after successful tool execution.
+* **Workaround**: If a crash occurs, the Standalone Launcher automatically detects the failure and restarts the backend process within seconds to restore service.
+
+---
+
+## Changelog
+
+See [CHANGELOG.md](file:///e:/Personal/minecraft/CHANGELOG.md) for a complete history of releases and development milestones.
 
 ---
 

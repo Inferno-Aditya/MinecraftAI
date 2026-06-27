@@ -16,10 +16,10 @@ namespace MinecraftBackendLauncher
     public enum LauncherState
     {
         Idle,           // Minecraft is not running. Launcher is monitoring.
-        Starting,       // Minecraft running, backend is starting and health checks are running.
-        RunningManaged, // Minecraft running, backend spawned by launcher is healthy.
-        RunningAttached,// Minecraft running, pre-existing backend detected and is healthy.
-        Error           // Backend failed to start or crashed too many times.
+        Starting,       // Minecraft running, backend or dashboard is starting and health checks are running.
+        RunningManaged, // Minecraft running, backend/dashboard spawned by launcher is healthy.
+        RunningAttached,// Minecraft running, pre-existing backend/dashboard detected and is healthy.
+        Error           // Backend or dashboard failed to start or crashed too many times.
     }
 
     public class LauncherMetrics
@@ -29,15 +29,51 @@ namespace MinecraftBackendLauncher
         public Color StateColor { get; set; }
         public bool MinecraftRunning { get; set; }
         public int MinecraftPid { get; set; }
-        public bool BackendHealthy { get; set; }
-        public int? BackendPid { get; set; }
         public DateTime LauncherUptimeStart { get; set; }
+
+        // Backend
+        public ServiceState BackendState { get; set; }
+        public string BackendStateString { get; set; } = "";
+        public Color BackendStateColor { get; set; }
+        public int? BackendPid { get; set; }
         public DateTime? BackendUptimeStart { get; set; }
-        public int RestartAttempts { get; set; }
-        public int MaxRestartAttempts { get; set; }
-        public DateTime? LastHealthyCheck { get; set; }
+        public int BackendRestartAttempts { get; set; }
+        public int BackendMaxRestartAttempts { get; set; }
+        public bool BackendHealthCheckResult { get; set; }
+        public DateTime? BackendLastHealthyCheck { get; set; }
         public bool AutoStartBackend { get; set; }
-        public string HealthEndpoint { get; set; } = "";
+        public string BackendHealthUrl { get; set; } = "";
+        public bool BackendManuallyOverridden { get; set; }
+        public int BackendTotalStarts { get; set; }
+        public int BackendTotalRestarts { get; set; }
+        public int BackendUnexpectedCrashes { get; set; }
+        public DateTime? BackendLastSuccessfulLaunch { get; set; }
+        public DateTime? BackendLastSuccessfulShutdown { get; set; }
+        public int BackendConsecutiveFailureCount { get; set; }
+        public string BackendWorkingDirectory { get; set; } = "";
+        public string BackendStartupCommand { get; set; } = "";
+
+        // Dashboard
+        public ServiceState DashboardState { get; set; }
+        public string DashboardStateString { get; set; } = "";
+        public Color DashboardStateColor { get; set; }
+        public int? DashboardPid { get; set; }
+        public DateTime? DashboardUptimeStart { get; set; }
+        public int DashboardRestartAttempts { get; set; }
+        public int DashboardMaxRestartAttempts { get; set; }
+        public bool DashboardHealthCheckResult { get; set; }
+        public DateTime? DashboardLastHealthyCheck { get; set; }
+        public bool AutoStartDashboard { get; set; }
+        public string DashboardHealthUrl { get; set; } = "";
+        public bool DashboardManuallyOverridden { get; set; }
+        public int DashboardTotalStarts { get; set; }
+        public int DashboardTotalRestarts { get; set; }
+        public int DashboardUnexpectedCrashes { get; set; }
+        public DateTime? DashboardLastSuccessfulLaunch { get; set; }
+        public DateTime? DashboardLastSuccessfulShutdown { get; set; }
+        public int DashboardConsecutiveFailureCount { get; set; }
+        public string DashboardWorkingDirectory { get; set; } = "";
+        public string DashboardStartupCommand { get; set; } = "";
     }
 
     public class LauncherConfig
@@ -48,6 +84,14 @@ namespace MinecraftBackendLauncher
         public int PollIntervalMs { get; set; } = 2000;
         public int MaxRestartAttempts { get; set; } = 3;
         public bool AutoStartBackend { get; set; } = true;
+
+        public bool AutoStartDashboard { get; set; } = true;
+        public string DashboardCommand { get; set; } = "npm run dev";
+        public string DashboardWorkingDirectory { get; set; } = "../dashboard";
+        public string DashboardHealthUrl { get; set; } = "http://localhost:5173";
+        public int DashboardRestartAttempts { get; set; } = 3;
+        public int BackendStartupTimeoutSeconds { get; set; } = 30;
+        public int DashboardStartupTimeoutSeconds { get; set; } = 30;
     }
 
     static class Program
@@ -94,19 +138,20 @@ namespace MinecraftBackendLauncher
         private LauncherState _state = LauncherState.Idle;
         private bool _minecraftRunning = false;
         private int _minecraftPid = 0;
-        private bool _backendHealthy = false;
-        private Process? _managedBackendProcess = null;
-        private int _restartAttempts = 0;
-        private DateTime _launcherUptimeStart;
-        private DateTime? _backendUptimeStart = null;
-        private DateTime? _lastHealthyCheck = null;
-        private DateTime _backendSpawnTime = DateTime.MinValue;
+
+        // Managers
+        private readonly BackendManager _backendManager;
+        private readonly DashboardManager _dashboardManager;
 
         // UI Form
         private DashboardForm? _dashboardForm = null;
 
         // Lock for logging
         private readonly object _logLock = new object();
+
+        private DateTime _launcherUptimeStart;
+
+        public LauncherConfig Config => _config;
 
         public LauncherApplicationContext()
         {
@@ -116,6 +161,10 @@ namespace MinecraftBackendLauncher
 
             // Initialize Configuration & Logger paths
             InitializeConfigAndPaths();
+
+            // Instantiate managers
+            _backendManager = new BackendManager(this, _httpClient);
+            _dashboardManager = new DashboardManager(this, _httpClient);
 
             LogInfo("Launcher initialized in monitoring mode.");
 
@@ -137,7 +186,8 @@ namespace MinecraftBackendLauncher
                 // Set up tray context menu
                 var contextMenu = new ContextMenuStrip();
                 contextMenu.Items.Add("Status Dashboard", null, (s, e) => ShowDashboard());
-                contextMenu.Items.Add("Force Restart Backend", null, (s, e) => ForceRestartBackend());
+                contextMenu.Items.Add("Force Restart Backend", null, (s, e) => RestartBackendManual());
+                contextMenu.Items.Add("Force Restart Dashboard", null, (s, e) => RestartDashboardManual());
                 contextMenu.Items.Add("-");
                 contextMenu.Items.Add("Open Launcher Log", null, (s, e) => OpenLogFile());
                 contextMenu.Items.Add("Open Configuration", null, (s, e) => OpenConfigFile());
@@ -154,7 +204,14 @@ namespace MinecraftBackendLauncher
             Task.Run(() => MonitorLoopAsync(_cts.Token));
         }
 
-        private string ResolvePath(string path)
+        public ServiceManager? GetService(string name)
+        {
+            if (name.Equals("Backend", StringComparison.OrdinalIgnoreCase)) return _backendManager;
+            if (name.Equals("Dashboard", StringComparison.OrdinalIgnoreCase)) return _dashboardManager;
+            return null;
+        }
+
+        public string ResolvePath(string path)
         {
             if (string.IsNullOrEmpty(path)) return "";
             if (Path.IsPathRooted(path)) return path;
@@ -304,22 +361,59 @@ namespace MinecraftBackendLauncher
         {
             lock (_stateLock)
             {
+                var globalState = DetermineGlobalState();
                 return new LauncherMetrics
                 {
-                    State = _state,
-                    StateString = GetStateString(_state),
-                    StateColor = GetStateColor(_state),
+                    State = globalState,
+                    StateString = GetStateString(globalState),
+                    StateColor = GetStateColor(globalState),
                     MinecraftRunning = _minecraftRunning,
                     MinecraftPid = _minecraftPid,
-                    BackendHealthy = _backendHealthy,
-                    BackendPid = _managedBackendProcess?.Id,
                     LauncherUptimeStart = _launcherUptimeStart,
-                    BackendUptimeStart = _backendUptimeStart,
-                    RestartAttempts = _restartAttempts,
-                    MaxRestartAttempts = _config.MaxRestartAttempts,
-                    LastHealthyCheck = _lastHealthyCheck,
-                    AutoStartBackend = _config.AutoStartBackend,
-                    HealthEndpoint = _config.HealthEndpoint
+
+                    // Backend
+                    BackendState = _backendManager.State,
+                    BackendStateString = GetServiceStateString(_backendManager.State, _backendManager.IsAutoStartEnabled(), _backendManager.IsManuallyStopped),
+                    BackendStateColor = GetServiceStateColor(_backendManager.State),
+                    BackendPid = _backendManager.ProcessId,
+                    BackendUptimeStart = _backendManager.UptimeStart,
+                    BackendRestartAttempts = _backendManager.ConsecutiveFailureCount > 0 ? _backendManager.ConsecutiveFailureCount - 1 : 0,
+                    BackendMaxRestartAttempts = _backendManager.GetMaxRestartAttempts(),
+                    BackendHealthCheckResult = _backendManager.LastHealthCheckResult,
+                    BackendLastHealthyCheck = _backendManager.LastHealthyCheckTime,
+                    AutoStartBackend = _backendManager.IsAutoStartEnabled(),
+                    BackendHealthUrl = _backendManager.GetHealthUrl(),
+                    BackendManuallyOverridden = _backendManager.IsManuallyStarted || _backendManager.IsManuallyStopped,
+                    BackendTotalStarts = _backendManager.TotalStarts,
+                    BackendTotalRestarts = _backendManager.TotalRestarts,
+                    BackendUnexpectedCrashes = _backendManager.UnexpectedCrashes,
+                    BackendLastSuccessfulLaunch = _backendManager.LastSuccessfulLaunch,
+                    BackendLastSuccessfulShutdown = _backendManager.LastSuccessfulShutdown,
+                    BackendConsecutiveFailureCount = _backendManager.ConsecutiveFailureCount,
+                    BackendWorkingDirectory = _backendManager.GetWorkingDirectory(),
+                    BackendStartupCommand = _backendManager.GetStartupCommand(),
+
+                    // Dashboard
+                    DashboardState = _dashboardManager.State,
+                    DashboardStateString = GetServiceStateString(_dashboardManager.State, _dashboardManager.IsAutoStartEnabled(), _dashboardManager.IsManuallyStopped),
+                    DashboardStateColor = GetServiceStateColor(_dashboardManager.State),
+                    DashboardPid = _dashboardManager.ProcessId,
+                    DashboardUptimeStart = _dashboardManager.UptimeStart,
+                    DashboardRestartAttempts = _dashboardManager.ConsecutiveFailureCount > 0 ? _dashboardManager.ConsecutiveFailureCount - 1 : 0,
+                    DashboardMaxRestartAttempts = _dashboardManager.GetMaxRestartAttempts(),
+                    DashboardHealthCheckResult = _dashboardManager.LastHealthCheckResult,
+                    DashboardLastHealthyCheck = _dashboardManager.LastHealthyCheckTime,
+                    AutoStartDashboard = _dashboardManager.IsAutoStartEnabled(),
+                    DashboardHealthUrl = _dashboardManager.GetHealthUrl(),
+                    DashboardManuallyOverridden = _dashboardManager.IsManuallyStarted || _dashboardManager.IsManuallyStopped,
+                    DashboardTotalStarts = _dashboardManager.TotalStarts,
+                    DashboardTotalRestarts = _dashboardManager.TotalRestarts,
+                    DashboardUnexpectedCrashes = _dashboardManager.UnexpectedCrashes,
+                    DashboardLastSuccessfulLaunch = _dashboardManager.LastSuccessfulLaunch,
+                    DashboardLastSuccessfulShutdown = _dashboardManager.LastSuccessfulShutdown,
+                    DashboardConsecutiveFailureCount = _dashboardManager.ConsecutiveFailureCount,
+                    DashboardWorkingDirectory = _dashboardManager.GetWorkingDirectory(),
+                    DashboardStartupCommand = _dashboardManager.GetStartupCommand()
                 };
             }
         }
@@ -329,10 +423,10 @@ namespace MinecraftBackendLauncher
             return state switch
             {
                 LauncherState.Idle => "Monitoring (Minecraft not running)",
-                LauncherState.Starting => "Starting backend...",
-                LauncherState.RunningManaged => "Running (Managed backend active)",
-                LauncherState.RunningAttached => "Running (Attached to manual backend)",
-                LauncherState.Error => "Error (Backend failed to start/crashed)",
+                LauncherState.Starting => "Starting services...",
+                LauncherState.RunningManaged => "Running (Managed services active)",
+                LauncherState.RunningAttached => "Running (Attached to pre-existing services)",
+                LauncherState.Error => "Error (Services failed/crashed)",
                 _ => "Unknown"
             };
         }
@@ -350,6 +444,66 @@ namespace MinecraftBackendLauncher
             };
         }
 
+        public static string GetServiceStateString(ServiceState state, bool autoStart, bool manuallyStopped)
+        {
+            if (manuallyStopped)
+            {
+                return "Stopped (Manual Override)";
+            }
+            return state switch
+            {
+                ServiceState.Stopped => autoStart ? "Stopped" : "Stopped (Auto-Start Disabled)",
+                ServiceState.Starting => "Starting...",
+                ServiceState.RunningManaged => "Healthy (Managed)",
+                ServiceState.RunningAttached => "Healthy (Attached)",
+                ServiceState.Error => "Error / Failed",
+                _ => "Unknown"
+            };
+        }
+
+        public static Color GetServiceStateColor(ServiceState state)
+        {
+            return state switch
+            {
+                ServiceState.Stopped => Color.FromArgb(156, 163, 175),   // Gray
+                ServiceState.Starting => Color.FromArgb(245, 158, 11),  // Amber
+                ServiceState.RunningManaged => Color.FromArgb(16, 185, 129), // Emerald
+                ServiceState.RunningAttached => Color.FromArgb(16, 185, 129), // Emerald
+                ServiceState.Error => Color.FromArgb(239, 68, 68),      // Crimson
+                _ => Color.Gray
+            };
+        }
+
+        private LauncherState DetermineGlobalState()
+        {
+            if (!_minecraftRunning)
+            {
+                return LauncherState.Idle;
+            }
+
+            if (_backendManager.State == ServiceState.Error || _dashboardManager.State == ServiceState.Error)
+            {
+                return LauncherState.Error;
+            }
+
+            if (_backendManager.State == ServiceState.Starting || _dashboardManager.State == ServiceState.Starting)
+            {
+                return LauncherState.Starting;
+            }
+
+            if (_backendManager.State == ServiceState.RunningManaged || _dashboardManager.State == ServiceState.RunningManaged)
+            {
+                return LauncherState.RunningManaged;
+            }
+
+            if (_backendManager.State == ServiceState.RunningAttached || _dashboardManager.State == ServiceState.RunningAttached)
+            {
+                return LauncherState.RunningAttached;
+            }
+
+            return LauncherState.Idle;
+        }
+
         private async Task MonitorLoopAsync(CancellationToken cancellationToken)
         {
             while (!cancellationToken.IsCancellationRequested)
@@ -363,7 +517,6 @@ namespace MinecraftBackendLauncher
                     LogError($"Error in monitoring loop: {ex.Message}");
                 }
                 
-                // Read poll interval from config dynamically to allow updates on the fly
                 int pollInterval = _config.PollIntervalMs > 0 ? _config.PollIntervalMs : 2000;
                 await Task.Delay(pollInterval, cancellationToken);
             }
@@ -374,135 +527,51 @@ namespace MinecraftBackendLauncher
             // 1. Detect Minecraft
             var (mcRunning, mcPid) = DetectMinecraftProcess();
             
-            // 2. Perform Health Check
-            bool backendHealthy = await CheckBackendHealthAsync();
+            string requestId = GenerateRequestId();
+            bool mcTransitionedToRunning = mcRunning && !_minecraftRunning;
+            bool mcTransitionedToStopped = !mcRunning && _minecraftRunning;
+
+            if (mcTransitionedToRunning)
+            {
+                LogInfo(requestId, $"Minecraft client launch detected (PID: {mcPid}). Resetting manual overrides.");
+                _backendManager.IsManuallyStarted = false;
+                _backendManager.IsManuallyStopped = false;
+                _dashboardManager.IsManuallyStarted = false;
+                _dashboardManager.IsManuallyStopped = false;
+            }
+
+            if (mcTransitionedToStopped)
+            {
+                LogInfo(requestId, "Minecraft client exit detected. Cleaning up managed services.");
+                _backendManager.Stop(requestId);
+                _dashboardManager.Stop(requestId);
+
+                _backendManager.IsManuallyStarted = false;
+                _backendManager.IsManuallyStopped = false;
+                _dashboardManager.IsManuallyStarted = false;
+                _dashboardManager.IsManuallyStopped = false;
+            }
 
             lock (_stateLock)
             {
                 _minecraftRunning = mcRunning;
                 _minecraftPid = mcPid;
-                _backendHealthy = backendHealthy;
-
-                if (backendHealthy)
-                {
-                    _lastHealthyCheck = DateTime.Now;
-                }
-
+                
                 // Load config changes if config file was modified
                 LoadConfig();
+            }
 
-                // 3. State Machine
-                switch (_state)
+            // 2. Tick managers
+            await _backendManager.TickAsync(mcRunning, requestId);
+            await _dashboardManager.TickAsync(mcRunning, requestId);
+
+            // 3. Update global state and tray icon
+            lock (_stateLock)
+            {
+                var globalState = DetermineGlobalState();
+                if (globalState != _state)
                 {
-                    case LauncherState.Idle:
-                        if (_minecraftRunning)
-                        {
-                            if (backendHealthy)
-                            {
-                                LogInfo("Pre-existing healthy backend detected. Attaching to instance.");
-                                _backendUptimeStart = DateTime.Now; // Estimate uptime start from attach time
-                                TransitionTo(LauncherState.RunningAttached);
-                            }
-                            else if (_config.AutoStartBackend)
-                            {
-                                LogInfo($"Minecraft client detected (PID: {_minecraftPid}). Starting backend...");
-                                LaunchBackend();
-                            }
-                            else
-                            {
-                                if (_notifyIcon != null)
-                                {
-                                    _notifyIcon.Text = "Minecraft AI: Running (Backend Auto-Start Disabled)";
-                                }
-                            }
-                        }
-                        else
-                        {
-                            // If we have a stale managed backend still running, kill it
-                            if (_managedBackendProcess != null && !_managedBackendProcess.HasExited)
-                            {
-                                LogInfo("Minecraft is not running. Stopping orphaned managed backend...");
-                                StopBackend();
-                            }
-                        }
-                        break;
-
-                    case LauncherState.Starting:
-                        if (!_minecraftRunning)
-                        {
-                            LogInfo("Minecraft exited during backend startup. Stopping backend.");
-                            StopBackend();
-                            TransitionTo(LauncherState.Idle);
-                        }
-                        else if (backendHealthy)
-                        {
-                            LogInfo("Backend health check passed. Backend is active and healthy.");
-                            _backendUptimeStart = DateTime.Now;
-                            _restartAttempts = 0;
-                            TransitionTo(LauncherState.RunningManaged);
-                        }
-                        else
-                        {
-                            // Check if backend startup health check timed out (30 seconds limit)
-                            if ((DateTime.Now - _backendSpawnTime).TotalSeconds > 30)
-                            {
-                                LogError("Backend health check timed out during startup.");
-                                StopBackend();
-                                HandleBackendFailure();
-                            }
-                        }
-                        break;
-
-                    case LauncherState.RunningManaged:
-                        if (!_minecraftRunning)
-                        {
-                            LogInfo("Minecraft exited. Shutting down managed backend...");
-                            StopBackend();
-                            TransitionTo(LauncherState.Idle);
-                        }
-                        else if (_managedBackendProcess == null || _managedBackendProcess.HasExited || !backendHealthy)
-                        {
-                            LogWarning("Managed backend process terminated or became unhealthy.");
-                            StopBackend();
-                            HandleBackendFailure();
-                        }
-                        break;
-
-                    case LauncherState.RunningAttached:
-                        if (!_minecraftRunning)
-                        {
-                            LogInfo("Minecraft exited. Detaching from backend.");
-                            TransitionTo(LauncherState.Idle);
-                        }
-                        else if (!backendHealthy)
-                        {
-                            LogWarning("Attached backend went offline.");
-                            if (_config.AutoStartBackend)
-                            {
-                                LogInfo("AutoStart is enabled. Spawning managed backend...");
-                                LaunchBackend();
-                            }
-                            else
-                            {
-                                TransitionTo(LauncherState.Idle);
-                            }
-                        }
-                        break;
-
-                    case LauncherState.Error:
-                        if (!_minecraftRunning)
-                        {
-                            LogInfo("Minecraft exited. Clearing error state and returning to Idle.");
-                            _restartAttempts = 0;
-                            TransitionTo(LauncherState.Idle);
-                        }
-                        else if (backendHealthy)
-                        {
-                            LogInfo("Healthy backend detected while in error state. Attaching...");
-                            _backendUptimeStart = DateTime.Now;
-                            TransitionTo(LauncherState.RunningAttached);
-                        }
-                        break;
+                    TransitionTo(globalState);
                 }
             }
         }
@@ -513,149 +582,30 @@ namespace MinecraftBackendLauncher
             UpdateTrayIcon(newState);
             
             string statusMsg = GetStateString(newState);
-            if (newState == LauncherState.RunningManaged && _managedBackendProcess != null)
-            {
-                statusMsg += $" (PID: {_managedBackendProcess.Id})";
-            }
             if (_notifyIcon != null)
             {
                 _notifyIcon.Text = $"Minecraft AI Launcher: {statusMsg}";
             }
         }
 
-        private void HandleBackendFailure()
+        // Manual controls delegates
+        public void StartBackend() => _backendManager.Start(GenerateRequestId());
+        public void StopBackendManual() => _backendManager.Stop(GenerateRequestId());
+        public void RestartBackendManual() => _backendManager.Restart(GenerateRequestId());
+
+        public void StartDashboard() => _dashboardManager.Start(GenerateRequestId());
+        public void StopDashboardManual() => _dashboardManager.Stop(GenerateRequestId());
+        public void RestartDashboardManual() => _dashboardManager.Restart(GenerateRequestId());
+
+        private string GenerateRequestId()
         {
-            if (_restartAttempts < _config.MaxRestartAttempts)
-            {
-                _restartAttempts++;
-                LogInfo($"Attempting backend auto-restart ({_restartAttempts}/{_config.MaxRestartAttempts})...");
-                LaunchBackend();
-            }
-            else
-            {
-                LogError($"Backend startup failed after {_config.MaxRestartAttempts} attempts. Entering error state.");
-                TransitionTo(LauncherState.Error);
-            }
-        }
-
-        private void LaunchBackend()
-        {
-            string pythonExe = ResolvePath(_config.PythonExecutable);
-            string backendDir = ResolvePath(_config.BackendDirectory);
-
-            if (!Directory.Exists(backendDir))
-            {
-                LogError($"Backend directory does not exist: {backendDir}");
-                TransitionTo(LauncherState.Error);
-                return;
-            }
-
-            if (!File.Exists(pythonExe))
-            {
-                LogError($"Python executable does not exist: {pythonExe}");
-                TransitionTo(LauncherState.Error);
-                return;
-            }
-
-            try
-            {
-                var startInfo = new ProcessStartInfo
-                {
-                    FileName = pythonExe,
-                    Arguments = "main.py",
-                    WorkingDirectory = backendDir,
-                    UseShellExecute = false,
-                    CreateNoWindow = true,
-                    RedirectStandardOutput = false,
-                    RedirectStandardError = false
-                };
-
-                _managedBackendProcess = new Process { StartInfo = startInfo };
-                _managedBackendProcess.Start();
-                _backendSpawnTime = DateTime.Now;
-
-                // Associate process with Windows Job Object for automatic clean-up on exit
-                JobObject.AssociateProcess(_managedBackendProcess);
-
-                LogInfo($"Backend process launched successfully (PID: {_managedBackendProcess.Id}).");
-                TransitionTo(LauncherState.Starting);
-            }
-            catch (Exception ex)
-            {
-                LogError($"Failed to spawn backend process: {ex.Message}");
-                TransitionTo(LauncherState.Error);
-            }
-        }
-
-        private void StopBackend()
-        {
-            if (_managedBackendProcess != null)
-            {
-                try
-                {
-                    if (!_managedBackendProcess.HasExited)
-                    {
-                        LogInfo($"Killing backend process tree (PID: {_managedBackendProcess.Id})...");
-                        _managedBackendProcess.Kill(entireProcessTree: true);
-                    }
-                }
-                catch (Exception ex)
-                {
-                    LogError($"Failed to terminate backend process tree: {ex.Message}");
-                }
-                finally
-                {
-                    _managedBackendProcess.Dispose();
-                    _managedBackendProcess = null;
-                    _backendUptimeStart = null;
-                }
-            }
-        }
-
-        public void ForceRestartBackend()
-        {
-            lock (_stateLock)
-            {
-                LogInfo("Force-restart triggered by user.");
-                StopBackend();
-                _restartAttempts = 0;
-                if (_minecraftRunning)
-                {
-                    LaunchBackend();
-                }
-                else
-                {
-                    LogInfo("Minecraft is not running. Launcher remains Idle.");
-                    TransitionTo(LauncherState.Idle);
-                }
-            }
-        }
-
-        private async Task<bool> CheckBackendHealthAsync()
-        {
-            try
-            {
-                using (var response = await _httpClient.GetAsync(_config.HealthEndpoint))
-                {
-                    if (response.IsSuccessStatusCode)
-                    {
-                        string body = await response.Content.ReadAsStringAsync();
-                        return body.Contains("healthy");
-                    }
-                }
-            }
-            catch
-            {
-                // Health check failed (server offline / unresponsive)
-            }
-            return false;
+            return $"Req-{Guid.NewGuid().ToString("N").Substring(0, 8).ToUpper()}";
         }
 
         private (bool isRunning, int pid) DetectMinecraftProcess()
         {
             try
             {
-                // Query active processes using WMI
                 using (var searcher = new ManagementObjectSearcher(
                     "SELECT ProcessId, Name, CommandLine FROM Win32_Process WHERE Name = 'javaw.exe' OR Name = 'java.exe'"))
                 {
@@ -679,7 +629,6 @@ namespace MinecraftBackendLauncher
             }
             catch (Exception)
             {
-                // Fall back to title-based matching in case of WMI permission errors
                 return DetectMinecraftProcessFallback();
             }
             return (false, 0);
@@ -701,13 +650,13 @@ namespace MinecraftBackendLauncher
                     }
                     catch
                     {
-                        // Ignore access denied for specific processes
+                        // Ignore
                     }
                 }
             }
             catch
             {
-                // Ignore fallback errors
+                // Ignore
             }
             return (false, 0);
         }
@@ -716,7 +665,6 @@ namespace MinecraftBackendLauncher
         {
             if (string.IsNullOrEmpty(cmdLine)) return false;
 
-            // Look for client-specific flags
             return cmdLine.Contains("net.minecraft.client.main.Main") ||
                    cmdLine.Contains("net.minecraft.launchwrapper.Launch") ||
                    cmdLine.Contains("--gameDir") ||
@@ -783,14 +731,19 @@ namespace MinecraftBackendLauncher
             }
         }
 
-        private void LogInfo(string message) => Log("INFO", message);
-        private void LogWarning(string message) => Log("WARN", message);
-        private void LogError(string message) => Log("ERROR", message);
+        public void LogInfo(string message) => Log("INFO", "", message);
+        public void LogWarning(string message) => Log("WARN", "", message);
+        public void LogError(string message) => Log("ERROR", "", message);
 
-        private void Log(string level, string message)
+        public void LogInfo(string requestId, string message) => Log("INFO", requestId, message);
+        public void LogWarning(string requestId, string message) => Log("WARN", requestId, message);
+        public void LogError(string requestId, string message) => Log("ERROR", requestId, message);
+
+        private void Log(string level, string requestId, string message)
         {
             var timestamp = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
-            var logLine = $"[{timestamp}] [{level}] {message}";
+            var reqPart = string.IsNullOrEmpty(requestId) ? "" : $" [{requestId}]";
+            var logLine = $"[{timestamp}] [{level}]{reqPart} {message}";
 
             Console.WriteLine(logLine);
 
@@ -817,7 +770,7 @@ namespace MinecraftBackendLauncher
 
         private void ExitApplication()
         {
-            if (MessageBox.Show("Are you sure you want to exit the Minecraft AI Companion Launcher? This will close the AI Backend.", 
+            if (MessageBox.Show("Are you sure you want to exit the Minecraft AI Companion Launcher? This will close all managed services.", 
                 "Exit Launcher", MessageBoxButtons.YesNo, MessageBoxIcon.Question) == DialogResult.Yes)
             {
                 ExitThread();
@@ -831,10 +784,10 @@ namespace MinecraftBackendLauncher
                 _cts.Cancel();
                 _cts.Dispose();
                 
-                // Terminate managed backend process on shutdown
-                StopBackend();
+                string cleanupReq = "Req-CLEANUP";
+                _backendManager?.Stop(cleanupReq);
+                _dashboardManager?.Stop(cleanupReq);
                 
-                // Clean up job objects
                 JobObject.CleanUp();
 
                 if (_notifyIcon != null)

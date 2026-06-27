@@ -1,6 +1,6 @@
 from pydantic import BaseModel, Field, field_validator
 from typing import Dict, Any, Type, List
-from .base import BaseTool
+from .base import BaseTool, ToolResult
 
 try:
     from context import PlayerContext, AreaSummary, TerrainStatistics
@@ -41,7 +41,7 @@ class ScanAreaTool(BaseTool):
             "what does the surrounding terrain look like?"
         ]
 
-    def execute(self, context: PlayerContext, arguments: Dict[str, Any]) -> Dict[str, Any]:
+    def execute(self, context: PlayerContext, arguments: Dict[str, Any]) -> ToolResult:
         radius = arguments.get("radius", 16)
         
         nearby_blocks = get_blocks_in_radius(context, radius)
@@ -57,7 +57,9 @@ class ScanAreaTool(BaseTool):
         ore_counts = {}
 
         # Coordinate tracking for terrain statistics
-        known_ys = [int(context.player_info.y)]
+        info = getattr(context, "player_info", None)
+        py = getattr(info, "y", 64.0) if info else 64.0
+        known_ys = [int(py)]
 
         for nb in nearby_blocks:
             b_type = nb.type.lower()
@@ -99,8 +101,12 @@ class ScanAreaTool(BaseTool):
             height_variation=height_var
         )
 
+        env = getattr(context, "environment", None)
+        biome_obj = getattr(env, "biome", None) if env else None
+        biome_name = getattr(biome_obj, "name", "unknown") if biome_obj else "unknown"
+
         summary = AreaSummary(
-            biome=context.environment.biome.name,
+            biome=biome_name,
             height_variation=height_var,
             stone_count=stone_count,
             water_count=water_count,
@@ -125,14 +131,9 @@ class ScanAreaTool(BaseTool):
             f"- Air: {air_count}"
         )
 
-        return {
-            "status": "success",
-            "message": msg,
-            "success": True,
-            "data": summary.model_dump(),
-            "metadata": {
-                "requested_radius": radius,
-                "effective_radius": radius,
-                "blocks_analyzed": len(nearby_blocks)
-            }
-        }
+        return ToolResult(
+            success=True,
+            message=msg,
+            data=summary.model_dump(),
+            tool_name=self.name
+        )

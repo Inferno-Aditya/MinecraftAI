@@ -1,6 +1,6 @@
 from pydantic import BaseModel
 from typing import Dict, Any, Type, List
-from .base import BaseTool
+from .base import BaseTool, ToolResult
 
 try:
     from context import PlayerContext
@@ -31,22 +31,39 @@ class GetLightLevelTool(BaseTool):
             "check light level"
         ]
 
-    def execute(self, context: PlayerContext, arguments: Dict[str, Any]) -> Dict[str, Any]:
-        light = context.environment.light_level
-        msg = f"Light Level: Combined={light.combined}/15 (Block Light={light.block}/15, Sky Light={light.sky}/15)."
+    def execute(self, context: PlayerContext, arguments: Dict[str, Any]) -> ToolResult:
+        env = getattr(context, "environment", None)
+        light = getattr(env, "light_level", None) if env else None
         
-        # Add warning about mobs spawning (light level <= 0 is spawning threshold for general mobs in newer Minecraft)
-        if light.combined <= 0:
+        if not light:
+            return ToolResult(
+                success=True,
+                message="Light Level: Combined=15/15 (Default).",
+                data={
+                    "block_light": 0,
+                    "sky_light": 15,
+                    "combined_light": 15
+                },
+                tool_name=self.name
+            )
+            
+        combined = getattr(light, "combined", 15)
+        block = getattr(light, "block", 0)
+        sky = getattr(light, "sky", 15)
+        
+        msg = f"Light Level: Combined={combined}/15 (Block Light={block}/15, Sky Light={sky}/15)."
+        
+        # Add warning about mobs spawning
+        if combined <= 0:
             msg += " WARNING: It is dark enough for monsters to spawn!"
 
-        return {
-            "status": "success",
-            "message": msg,
-            "success": True,
-            "data": {
-                "block_light": light.block,
-                "sky_light": light.sky,
-                "combined_light": light.combined
+        return ToolResult(
+            success=True,
+            message=msg,
+            data={
+                "block_light": block,
+                "sky_light": sky,
+                "combined_light": combined
             },
-            "metadata": {}
-        }
+            tool_name=self.name
+        )

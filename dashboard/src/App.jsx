@@ -13,9 +13,13 @@ export default function App() {
   const [logs, setLogs] = useState([]);
   const [logFilter, setLogFilter] = useState({ source: '', level: '', category: '', query: '' });
   const [saveLoading, setSaveLoading] = useState(false);
+  const [modelsData, setModelsData] = useState(null);
+  const [syncLoading, setSyncLoading] = useState(false);
+  const [syncWarning, setSyncWarning] = useState('');
   const [toast, setToast] = useState(null);
   const [apiKeysVisible, setApiKeysVisible] = useState(false);
   const [logsAutoRefresh, setLogsAutoRefresh] = useState(true);
+  const [diagnostics, setDiagnostics] = useState(null);
 
   // Modal/Form States for Adding Memory
   const [showAddMem, setShowAddMem] = useState(null); // 'location', 'note', 'preference'
@@ -54,6 +58,7 @@ export default function App() {
   useEffect(() => {
     if (backendOnline) {
       fetchConfig();
+      fetchModelsData();
       fetchProviders();
       fetchTools();
       fetchMemory();
@@ -69,6 +74,14 @@ export default function App() {
     return () => clearInterval(interval);
   }, [backendOnline, logsAutoRefresh, logFilter]);
 
+  // Poll diagnostics when on that tab
+  useEffect(() => {
+    if (!backendOnline || activeTab !== 'diagnostics') return;
+    fetchDiagnostics();
+    const interval = setInterval(fetchDiagnostics, 3000);
+    return () => clearInterval(interval);
+  }, [backendOnline, activeTab]);
+
   const showToast = (message, type = 'success') => {
     setToast({ message, type });
     setTimeout(() => setToast(null), 3000);
@@ -83,6 +96,67 @@ export default function App() {
       }
     } catch (err) {
       console.error('Failed to fetch config', err);
+    }
+  };
+
+  const fetchModelsData = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/api/models`);
+      if (res.ok) {
+        const data = await res.json();
+        setModelsData(data);
+        if (data.warning) {
+          setSyncWarning(data.warning);
+        } else {
+          setSyncWarning('');
+        }
+      }
+    } catch (err) {
+      console.error('Failed to fetch models data', err);
+    }
+  };
+
+  const fetchDiagnostics = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/api/diagnostics`);
+      if (res.ok) {
+        const data = await res.json();
+        setDiagnostics(data);
+      }
+    } catch (err) {
+      console.error('Failed to fetch diagnostics', err);
+    }
+  };
+
+  const handleSyncModels = async () => {
+    setSyncLoading(true);
+    try {
+      const res = await fetch(`${API_BASE}/api/models/refresh`, {
+        method: 'POST'
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setModelsData(data);
+        if (data.warning) {
+          setSyncWarning(data.warning);
+          showToast('Model sync completed with warnings.', 'error');
+        } else {
+          setSyncWarning('');
+          showToast('Models synchronized successfully!');
+        }
+        fetchConfig();
+        const statsRes = await fetch(`${API_BASE}/api/resources/stats`);
+        if (statsRes.ok) {
+          const statsData = await statsRes.json();
+          setStats(statsData);
+        }
+      } else {
+        showToast('Failed to synchronize models.', 'error');
+      }
+    } catch (err) {
+      showToast('Error synchronizing models.', 'error');
+    } finally {
+      setSyncLoading(false);
     }
   };
 
@@ -162,6 +236,31 @@ export default function App() {
       showToast('Error saving configuration.', 'error');
     } finally {
       setSaveLoading(false);
+    }
+  };
+
+  const handleModelChange = async (modelId) => {
+    try {
+      const res = await fetch(`${API_BASE}/api/models/active`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model_id: modelId })
+      });
+      if (res.ok) {
+        showToast('Active model switched successfully!');
+        fetchConfig();
+        fetchModelsData();
+        const statsRes = await fetch(`${API_BASE}/api/resources/stats`);
+        if (statsRes.ok) {
+          const statsData = await statsRes.json();
+          setStats(statsData);
+        }
+      } else {
+        const err = await res.json();
+        showToast(`Failed to switch model: ${err.detail || 'Error'}`, 'error');
+      }
+    } catch (err) {
+      showToast('Error switching active model.', 'error');
     }
   };
 
@@ -286,10 +385,10 @@ export default function App() {
     const cards = [
       { title: 'Current Provider', value: stats.current_provider, footer: `Model: ${stats.current_model}` },
       { title: 'Launcher Status', value: stats.launcher_status, footer: stats.launcher_status === 'Active (Connected)' ? 'Connected to tray' : 'Offline / monitoring' },
-      { title: 'Requests Today', value: stats.requests_today, footer: `Session: ${stats.requests_session}` },
-      { title: 'Remaining Quota', value: stats.remaining_quota, footer: 'Daily requests left' },
+      { title: 'Requests Today', value: stats.requests_today, footer: `Session: ${stats.requests_session} | This minute: ${stats.requests_this_minute ?? 0}` },
+      { title: 'Remaining Quota (Est.)', value: stats.remaining_quota, footer: 'Estimated from local tracking' },
       { title: 'Token Usage Today', value: stats.total_tokens_today.toLocaleString(), footer: `In: ${stats.input_tokens_today.toLocaleString()} | Out: ${stats.output_tokens_today.toLocaleString()}` },
-      { title: 'Average Latency', value: `${stats.average_latency}s`, footer: `Failed: ${stats.failed_requests}` },
+      { title: 'Average Latency', value: `${stats.average_latency}s`, footer: `Failed: ${stats.failed_requests} | Rate limits: ${stats.rate_limit_events_today ?? 0}` },
       { title: 'Backend Uptime', value: formatUptime(stats.backend_uptime), footer: `Started: ${new Date(Date.now() - stats.backend_uptime * 1000).toLocaleTimeString()}` },
       { title: 'AI Status', value: backendOnline ? 'Healthy' : 'Disconnected', footer: 'API connection status' }
     ];
@@ -626,6 +725,636 @@ export default function App() {
               )}
             </tbody>
           </table>
+        </div>
+      </div>
+    );
+  };
+
+  const renderPromptProfiler = () => {
+    if (!stats) return <div style={{ color: 'var(--color-text-secondary)' }}>Loading telemetry...</div>;
+
+    const latestReq = stats.recent_requests?.[0];
+    const profile = latestReq?.prompt_profile || {
+      system_prompt_tokens: 0,
+      context_tokens: 0,
+      memory_tokens: 0,
+      tool_tokens: 0,
+      user_message_tokens: 0,
+      total_prompt_tokens: 0,
+      baseline_tokens: 0
+    };
+
+    const total = profile.total_prompt_tokens || 1;
+    const pctSystem = (profile.system_prompt_tokens / total) * 100;
+    const pctContext = (profile.context_tokens / total) * 100;
+    const pctMemory = (profile.memory_tokens / total) * 100;
+    const pctTools = (profile.tool_tokens / total) * 100;
+    const pctUser = (profile.user_message_tokens / total) * 100;
+
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
+        {/* Metrics Row */}
+        <div className="stats-grid">
+          <div className="card">
+            <div className="card-title">Avg Prompt Size</div>
+            <div className="card-value">{stats.average_prompt_size}</div>
+            <div className="card-footer">Actual tokens sent</div>
+          </div>
+          <div className="card">
+            <div className="card-title">Avg Response Size</div>
+            <div className="card-value">{stats.average_response_size}</div>
+            <div className="card-footer">Generation length</div>
+          </div>
+          <div className="card">
+            <div className="card-title">Avg Tokens Saved</div>
+            <div className="card-value" style={{ color: 'var(--color-green)' }}>
+              {stats.average_tokens_saved}
+            </div>
+            <div className="card-footer">Per request savings</div>
+          </div>
+          <div className="card">
+            <div className="card-title">Token Reduction</div>
+            <div className="card-value" style={{ color: 'var(--color-green)' }}>
+              {stats.percentage_reduction}%
+            </div>
+            <div className="card-footer">Average size reduction</div>
+          </div>
+          <div className="card">
+            <div className="card-title">Latency Improvement</div>
+            <div className="card-value" style={{ color: 'var(--color-info)' }}>
+              ~{stats.estimated_latency_improvement}s
+            </div>
+            <div className="card-footer">Estimated time saved</div>
+          </div>
+        </div>
+
+        {/* Breakdown and Largest Row */}
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '20px' }}>
+          {/* Visual Breakdown Card */}
+          <div className="form-section">
+            <div className="form-title">Latest Request Breakdown ({latestReq?.model || 'No request yet'})</div>
+            {latestReq ? (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+                {/* Stacked bar */}
+                <div style={{
+                  display: 'flex', height: '24px', borderRadius: '4px', overflow: 'hidden', 
+                  backgroundColor: '#222', width: '100%', border: '1px solid #333'
+                }}>
+                  <div style={{ width: `${pctSystem}%`, backgroundColor: '#ffaa00', height: '100%' }} title={`System: ${profile.system_prompt_tokens} tokens`} />
+                  <div style={{ width: `${pctContext}%`, backgroundColor: '#3cc83c', height: '100%' }} title={`Context: ${profile.context_tokens} tokens`} />
+                  <div style={{ width: `${pctMemory}%`, backgroundColor: '#5555ff', height: '100%' }} title={`Memory: ${profile.memory_tokens} tokens`} />
+                  <div style={{ width: `${pctTools}%`, backgroundColor: '#ff5555', height: '100%' }} title={`Tools: ${profile.tool_tokens} tokens`} />
+                  <div style={{ width: `${pctUser}%`, backgroundColor: '#aaaaaa', height: '100%' }} title={`User Message: ${profile.user_message_tokens} tokens`} />
+                </div>
+
+                {/* Legend with tokens and labels */}
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', fontSize: '14px' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                      <div style={{ width: '12px', height: '12px', borderRadius: '2px', backgroundColor: '#ffaa00' }} />
+                      <span>System Prompt</span>
+                    </div>
+                    <span style={{ fontFamily: 'monospace' }}>{profile.system_prompt_tokens} tokens</span>
+                  </div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                      <div style={{ width: '12px', height: '12px', borderRadius: '2px', backgroundColor: '#3cc83c' }} />
+                      <span>Player Context</span>
+                    </div>
+                    <span style={{ fontFamily: 'monospace' }}>{profile.context_tokens} tokens</span>
+                  </div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                      <div style={{ width: '12px', height: '12px', borderRadius: '2px', backgroundColor: '#5555ff' }} />
+                      <span>Memory Summary</span>
+                    </div>
+                    <span style={{ fontFamily: 'monospace' }}>{profile.memory_tokens} tokens</span>
+                  </div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                      <div style={{ width: '12px', height: '12px', borderRadius: '2px', backgroundColor: '#ff5555' }} />
+                      <span>Tool Definitions</span>
+                    </div>
+                    <span style={{ fontFamily: 'monospace' }}>{profile.tool_tokens} tokens</span>
+                  </div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                      <div style={{ width: '12px', height: '12px', borderRadius: '2px', backgroundColor: '#aaaaaa' }} />
+                      <span>User Message</span>
+                    </div>
+                    <span style={{ fontFamily: 'monospace' }}>{profile.user_message_tokens} tokens</span>
+                  </div>
+                  <div style={{ borderTop: '1px solid #222', paddingTop: '10px', display: 'flex', justifyContent: 'space-between', fontWeight: 'bold' }}>
+                    <span>Total Prompt Size</span>
+                    <span style={{ color: 'var(--color-green)' }}>{profile.total_prompt_tokens} / {profile.baseline_tokens} baseline</span>
+                  </div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '13px', color: 'var(--color-green)' }}>
+                    <span>Optimization Savings</span>
+                    <span>-{profile.baseline_tokens - profile.total_prompt_tokens} tokens saved ({((profile.baseline_tokens - profile.total_prompt_tokens) / (profile.baseline_tokens || 1) * 100).toFixed(1)}% reduction)</span>
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <div style={{ color: 'var(--color-text-secondary)' }}>No request data available.</div>
+            )}
+          </div>
+
+          {/* Largest Prompts Card */}
+          <div className="form-section">
+            <div className="form-title">Largest Prompts (Top 5)</div>
+            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+              <thead>
+                <tr style={{ borderBottom: '2px solid #222', textAlign: 'left', color: 'var(--color-text-secondary)', fontSize: '13px' }}>
+                  <th style={{ padding: '8px 12px' }}>Timestamp</th>
+                  <th style={{ padding: '8px 12px' }}>Actual Size</th>
+                  <th style={{ padding: '8px 12px' }}>Baseline</th>
+                  <th style={{ padding: '8px 12px' }}>Saved</th>
+                </tr>
+              </thead>
+              <tbody>
+                {stats.largest_prompts?.map((r, i) => (
+                  <tr key={i} style={{ borderBottom: '1px solid #1a1a1a', fontSize: '14px' }}>
+                    <td style={{ padding: '8px 12px', color: '#888' }}>{new Date(r.timestamp).toLocaleTimeString()}</td>
+                    <td style={{ padding: '8px 12px', fontWeight: '600' }}>{r.total_prompt_tokens}</td>
+                    <td style={{ padding: '8px 12px', color: '#ccc' }}>{r.baseline_tokens}</td>
+                    <td style={{ padding: '8px 12px', color: 'var(--color-green)' }}>-{r.tokens_saved}</td>
+                  </tr>
+                ))}
+                {(!stats.largest_prompts || stats.largest_prompts.length === 0) && (
+                  <tr>
+                    <td colSpan="4" style={{ padding: '20px', textAlign: 'center', color: '#666' }}>No requests recorded yet.</td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        {/* History table */}
+        <div className="form-section">
+          <div className="form-title">Prompt History Breakdown</div>
+          <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+            <thead>
+              <tr style={{ borderBottom: '2px solid #222', textAlign: 'left', color: 'var(--color-text-secondary)', fontSize: '13px' }}>
+                <th style={{ padding: '12px' }}>Timestamp</th>
+                <th style={{ padding: '12px' }}>Model</th>
+                <th style={{ padding: '12px' }}>Actual (Baseline)</th>
+                <th style={{ padding: '12px' }}>Breakdown (Sys/Ctx/Mem/Tool/User)</th>
+                <th style={{ padding: '12px' }}>Savings</th>
+              </tr>
+            </thead>
+            <tbody>
+              {stats.recent_requests.map((r, i) => {
+                const p = r.prompt_profile || {
+                  system_prompt_tokens: r.input_tokens,
+                  context_tokens: 0,
+                  memory_tokens: 0,
+                  tool_tokens: 0,
+                  user_message_tokens: 0,
+                  total_prompt_tokens: r.input_tokens,
+                  baseline_tokens: r.input_tokens
+                };
+                return (
+                  <tr key={i} style={{ borderBottom: '1px solid #1a1a1a', fontSize: '14px' }}>
+                    <td style={{ padding: '12px', color: '#888' }}>{new Date(r.timestamp).toLocaleTimeString()}</td>
+                    <td style={{ padding: '12px', color: '#ccc' }}>{r.model}</td>
+                    <td style={{ padding: '12px', fontWeight: '500' }}>
+                      {p.total_prompt_tokens} <span style={{ fontSize: '12px', color: '#666' }}>({p.baseline_tokens})</span>
+                    </td>
+                    <td style={{ padding: '12px', fontFamily: 'monospace' }}>
+                      <span style={{ color: '#ffaa00' }}>{p.system_prompt_tokens}</span>/
+                      <span style={{ color: '#3cc83c' }}>{p.context_tokens}</span>/
+                      <span style={{ color: '#5555ff' }}>{p.memory_tokens}</span>/
+                      <span style={{ color: '#ff5555' }}>{p.tool_tokens}</span>/
+                      <span style={{ color: '#aaaaaa' }}>{p.user_message_tokens}</span>
+                    </td>
+                    <td style={{ padding: '12px', color: p.baseline_tokens - p.total_prompt_tokens > 0 ? 'var(--color-green)' : '#ccc' }}>
+                      {p.baseline_tokens - p.total_prompt_tokens > 0 ? `-${p.baseline_tokens - p.total_prompt_tokens} (${((p.baseline_tokens - p.total_prompt_tokens)/p.baseline_tokens * 100).toFixed(0)}%)` : '0%'}
+                    </td>
+                  </tr>
+                );
+              })}
+              {stats.recent_requests.length === 0 && (
+                <tr>
+                  <td colSpan="5" style={{ padding: '20px', textAlign: 'center', color: '#666' }}>No requests recorded yet.</td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    );
+  };
+
+  const renderModelManager = () => {
+    // Determine the source of model definitions (prefer rich modelsData from GET /api/models)
+    const mData = modelsData || {
+      active_model: stats?.current_model || 'gemini-2.5-flash',
+      active_provider: stats?.current_provider || 'gemini',
+      supported_models: stats?.model_benchmarks || {}
+    };
+
+    const activeId = mData.active_model;
+    const activeModel = mData.supported_models[activeId] || {
+      name: activeId,
+      provider: mData.active_provider,
+      description: 'Active model profile',
+      rpm: 15,
+      rpd: 1500,
+      context_window: 1000000,
+      output_token_limit: 8192,
+      recommended_usage: 'General'
+    };
+
+    const geminiAvail = providers.find(p => p.id === 'gemini')?.available ?? false;
+
+    // Only show selectable (non-hidden, supports_chat) models in the dropdown and table
+    const selectableModels = Object.fromEntries(
+      Object.entries(mData.supported_models || {}).filter(
+        ([, m]) => !m.is_hidden && m.supports_chat
+      )
+    );
+
+    // All models (including hidden) for the registry diagnostic section
+    const allModels = mData.supported_models || {};
+    const hiddenCount = Object.values(allModels).filter(m => m.is_hidden).length;
+
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
+        
+        {/* Sync Fallback / Active Removed Warning Alert */}
+        {syncWarning && (
+          <div style={{
+            padding: '16px',
+            borderRadius: 'var(--border-radius)',
+            border: '1px solid #ff5555',
+            backgroundColor: '#331111',
+            color: '#ffaaaa',
+            fontSize: '14px',
+            lineHeight: '1.5'
+          }}>
+            ⚠️ <strong>Sync Warning:</strong> {syncWarning}
+          </div>
+        )}
+
+        {/* Model Selection and Active Profile Row */}
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 2fr', gap: '20px' }}>
+          
+          {/* Selector Card */}
+          <div className="form-section" style={{ height: 'fit-content' }}>
+            <div className="form-title">Active AI Model</div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                <label style={{ fontSize: '13px', color: 'var(--color-text-secondary)' }}>Select Active Model</label>
+                <select 
+                  value={activeId}
+                  onChange={(e) => handleModelChange(e.target.value)}
+                  style={{
+                    padding: '10px 14px',
+                    borderRadius: 'var(--border-radius)',
+                    backgroundColor: '#1a1a1a',
+                    border: '1px solid #333',
+                    color: '#fff',
+                    fontSize: '14px',
+                    cursor: 'pointer',
+                    width: '100%'
+                  }}
+                >
+                  {Object.keys(selectableModels).map((mId) => (
+                    <option key={mId} value={mId}>
+                      {selectableModels[mId].icon || '🤖'} {selectableModels[mId].name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div style={{ 
+                padding: '12px', 
+                borderRadius: 'var(--border-radius)', 
+                backgroundColor: 'rgba(60, 200, 60, 0.05)', 
+                border: '1px solid rgba(60, 200, 60, 0.2)',
+                fontSize: '13px',
+                lineHeight: '1.4'
+              }}>
+                🌟 Gemma 4 is configured as the platform default model and will be selected automatically for new installations.
+              </div>
+            </div>
+          </div>
+
+          {/* Active Model Details Card */}
+          <div className="form-section">
+            <div className="form-title" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <span>Active Model Profile</span>
+              <span style={{ 
+                fontSize: '11px', 
+                fontWeight: 'bold', 
+                backgroundColor: activeModel.provider === 'mock' ? '#555' : 'var(--color-info)',
+                padding: '4px 8px', 
+                borderRadius: '4px',
+                color: '#fff',
+                textTransform: 'uppercase'
+              }}>
+                {activeModel.provider}
+              </span>
+            </div>
+
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <span style={{ fontSize: '24px' }}>{activeModel.icon || '🤖'}</span>
+                <span style={{ fontSize: '18px', fontWeight: 'bold', color: 'var(--color-green)' }}>{activeModel.name}</span>
+                {activeModel.badge && (
+                  <span style={{ 
+                    fontSize: '11px', 
+                    padding: '2px 6px', 
+                    borderRadius: '4px', 
+                    backgroundColor: 'var(--color-green)', 
+                    color: '#fff',
+                    fontWeight: 'bold'
+                  }}>
+                    {activeModel.badge}
+                  </span>
+                )}
+              </div>
+
+              <p style={{ fontSize: '14px', color: '#ccc', margin: 0, lineHeight: 1.5 }}>
+                {activeModel.description}
+              </p>
+
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px', fontSize: '13px', borderTop: '1px solid #222', paddingTop: '14px' }}>
+                <div>
+                  <strong style={{ color: 'var(--color-text-secondary)' }}>Recommended Usage:</strong>
+                  <p style={{ margin: '4px 0 0 0', color: '#aaa' }}>{activeModel.recommended_usage || 'No recommendations set'}</p>
+                </div>
+                <div>
+                  <strong style={{ color: 'var(--color-text-secondary)' }}>Context Window:</strong>
+                  <p style={{ margin: '4px 0 0 0', color: '#aaa', fontFamily: 'monospace' }}>
+                    {activeModel.context_window?.toLocaleString() || 'N/A'} tokens
+                  </p>
+                </div>
+                <div>
+                  <strong style={{ color: 'var(--color-text-secondary)' }}>Max Output Limit:</strong>
+                  <p style={{ margin: '4px 0 0 0', color: '#aaa', fontFamily: 'monospace' }}>
+                    {activeModel.output_token_limit?.toLocaleString() || 'N/A'} tokens
+                  </p>
+                </div>
+                <div>
+                  <strong style={{ color: 'var(--color-text-secondary)' }}>Rate Limits:</strong>
+                  <p style={{ margin: '4px 0 0 0', color: '#aaa' }}>
+                    {activeModel.rpm} RPM / {activeModel.rpd?.toLocaleString() || 'N/A'} RPD
+                  </p>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Discovered Models Registry Section */}
+        <div className="form-section">
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+            <div>
+              <div className="form-title" style={{ border: 'none', padding: '0', margin: '0' }}>Discovered Models Registry</div>
+              {hiddenCount > 0 && (
+                <div style={{ fontSize: '12px', color: 'var(--color-text-secondary)', marginTop: '4px' }}>
+                  {hiddenCount} non-chat model{hiddenCount !== 1 ? 's' : ''} hidden (TTS, image, music, research) — visible in /api/diagnostics
+                </div>
+              )}
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+              <span style={{ fontSize: '13px', color: 'var(--color-text-secondary)' }}>
+                Last Synced: {modelsData?.last_sync_time ? new Date(modelsData.last_sync_time).toLocaleString() : 'Never (Bootstrapped)'}
+              </span>
+              <button className="btn" onClick={handleSyncModels} disabled={syncLoading} style={{ minWidth: '120px' }}>
+                {syncLoading ? 'Syncing...' : 'Sync Models'}
+              </button>
+            </div>
+          </div>
+
+          <div style={{ overflowX: 'auto' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: '700px' }}>
+              <thead>
+                <tr style={{ borderBottom: '2px solid #222', textAlign: 'left', color: 'var(--color-text-secondary)', fontSize: '13px' }}>
+                  <th style={{ padding: '12px' }}>Model Details</th>
+                  <th style={{ padding: '12px' }}>Provider</th>
+                  <th style={{ padding: '12px' }}>Source</th>
+                  <th style={{ padding: '12px' }}>Capabilities</th>
+                  <th style={{ padding: '12px' }}>Context Window</th>
+                  <th style={{ padding: '12px' }}>Action</th>
+                </tr>
+              </thead>
+              <tbody>
+                {Object.keys(selectableModels).map((mId) => {
+                  const m = selectableModels[mId];
+                  const isActive = mId === activeId;
+                  
+                  // Status
+                  let statusText = m.discovery_source || 'Available';
+                  let statusColor = 'var(--color-text-secondary)';
+                  if (m.discovery_source === 'api') { statusText = 'Live API'; statusColor = 'var(--color-green)'; }
+                  else if (m.discovery_source === 'cache') { statusText = 'Cached'; statusColor = '#ffaa00'; }
+                  else if (m.discovery_source === 'hardcoded') { statusText = 'Default'; statusColor = '#888'; }
+
+                  if (m.provider === 'gemini' && !geminiAvail) {
+                    statusText = 'Key Required';
+                    statusColor = '#ff5555';
+                  }
+
+                  return (
+                    <tr key={mId} style={{ 
+                      borderBottom: '1px solid #1a1a1a', 
+                      fontSize: '14px',
+                      backgroundColor: isActive ? 'rgba(60, 200, 60, 0.02)' : 'transparent'
+                    }}>
+                      <td style={{ padding: '12px' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontWeight: '600' }}>
+                          <span>{m.icon || '🤖'}</span>
+                          <span style={{ color: isActive ? 'var(--color-green)' : '#fff' }}>{m.name}</span>
+                          {m.badge && (
+                            <span style={{ 
+                              fontSize: '10px', 
+                              padding: '2px 6px', 
+                              borderRadius: '4px', 
+                              backgroundColor: m.badge === 'Default' ? 'var(--color-green)' : '#555', 
+                              color: '#fff',
+                              fontWeight: 'bold'
+                            }}>
+                              {m.badge}
+                            </span>
+                          )}
+                        </div>
+                        <div style={{ fontSize: '12px', color: 'var(--color-text-secondary)', marginTop: '4px', maxWidth: '300px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={m.description}>
+                          {m.description}
+                        </div>
+                      </td>
+                      <td style={{ padding: '12px', textTransform: 'uppercase', fontSize: '12px', color: '#ccc' }}>
+                        {m.provider}
+                      </td>
+                      <td style={{ padding: '12px', color: statusColor, fontWeight: '500' }}>
+                        {statusText}
+                      </td>
+                      <td style={{ padding: '12px' }}>
+                        <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+                          {m.supports_chat && (
+                            <span style={{ fontSize: '11px', backgroundColor: 'rgba(60,200,60,0.1)', border: '1px solid rgba(60,200,60,0.3)', padding: '2px 6px', borderRadius: '4px', color: 'var(--color-green)' }}>
+                              Chat
+                            </span>
+                          )}
+                          {m.supports_tools && (
+                            <span style={{ fontSize: '11px', backgroundColor: '#222', border: '1px solid #333', padding: '2px 6px', borderRadius: '4px' }}>
+                              Tools
+                            </span>
+                          )}
+                          {m.supports_json_mode && (
+                            <span style={{ fontSize: '11px', backgroundColor: 'rgba(0,120,200,0.1)', border: '1px solid rgba(0,120,200,0.3)', padding: '2px 6px', borderRadius: '4px', color: '#7cc' }}>
+                              JSON
+                            </span>
+                          )}
+                        </div>
+                      </td>
+                      <td style={{ padding: '12px', fontFamily: 'monospace', color: '#ccc' }}>
+                        {m.context_window?.toLocaleString() || 'N/A'}
+                      </td>
+                      <td style={{ padding: '12px' }}>
+                        {isActive ? (
+                          <span style={{ color: 'var(--color-green)', fontWeight: 'bold' }}>Active</span>
+                        ) : (
+                          <button 
+                            className="btn" 
+                            onClick={() => handleModelChange(mId)} 
+                            style={{ 
+                              padding: '6px 12px', 
+                              fontSize: '12px',
+                              backgroundColor: '#222',
+                              border: '1px solid #444'
+                            }}
+                          >
+                            Select
+                          </button>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  const renderModelBenchmarks = () => {
+    if (!stats || !stats.model_benchmarks) {
+      return <div style={{ color: 'var(--color-text-secondary)' }}>Loading benchmarking data...</div>;
+    }
+
+    const models = Object.keys(stats.model_benchmarks).map(mId => ({
+      id: mId,
+      ...stats.model_benchmarks[mId]
+    }));
+
+    // Find max average latency to scale the latency bar chart
+    const maxLatency = Math.max(...models.map(m => m.average_latency), 1.0);
+
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
+        
+        {/* Visual Latency Benchmark Chart */}
+        <div className="form-section">
+          <div className="form-title">Average Latency Comparison (seconds)</div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '14px', padding: '10px 0' }}>
+            {models.map((m) => {
+              const pct = (m.average_latency / maxLatency) * 100;
+              const hasData = m.requests > 0;
+              return (
+                <div key={m.id} style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
+                  <div style={{ width: '180px', fontSize: '14px', fontWeight: '500', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={m.name}>
+                    {m.name}
+                  </div>
+                  <div style={{ flex: 1, height: '20px', backgroundColor: '#111', borderRadius: '4px', overflow: 'hidden', position: 'relative' }}>
+                    {hasData ? (
+                      <div style={{
+                        width: `${pct}%`,
+                        height: '100%',
+                        backgroundColor: m.id === stats.current_model ? 'var(--color-green)' : 'var(--color-info)',
+                        borderRadius: '4px',
+                        transition: 'width 0.5s ease-in-out'
+                      }} />
+                    ) : (
+                      <span style={{ position: 'absolute', left: '10px', top: '2px', fontSize: '11px', color: '#555' }}>No telemetry data</span>
+                    )}
+                  </div>
+                  <div style={{ width: '80px', fontSize: '14px', fontFamily: 'monospace', textAlign: 'right', fontWeight: 'bold' }}>
+                    {hasData ? `${m.average_latency.toFixed(2)}s` : 'N/A'}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* Benchmarking Comparison Table */}
+        <div className="form-section">
+          <div className="form-title">Model Performance & Reliability Matrix</div>
+          <div style={{ overflowX: 'auto' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: '800px' }}>
+              <thead>
+                <tr style={{ borderBottom: '2px solid #222', textAlign: 'left', color: 'var(--color-text-secondary)', fontSize: '13px' }}>
+                  <th style={{ padding: '12px' }}>Model</th>
+                  <th style={{ padding: '12px' }}>Requests</th>
+                  <th style={{ padding: '12px' }}>Avg Prompt / Response</th>
+                  <th style={{ padding: '12px' }}>Success Rate</th>
+                  <th style={{ padding: '12px' }}>Tool Success Rate</th>
+                  <th style={{ padding: '12px' }}>Rate Limit Events</th>
+                  <th style={{ padding: '12px' }}>Errors</th>
+                </tr>
+              </thead>
+              <tbody>
+                {models.map((m) => {
+                  const hasData = m.requests > 0;
+                  return (
+                    <tr key={m.id} style={{ 
+                      borderBottom: '1px solid #1a1a1a', 
+                      fontSize: '14px',
+                      backgroundColor: m.id === stats.current_model ? 'rgba(60, 200, 60, 0.03)' : 'transparent'
+                    }}>
+                      <td style={{ padding: '12px' }}>
+                        <div style={{ fontWeight: '600', color: m.id === stats.current_model ? 'var(--color-green)' : '#fff' }}>
+                          {m.name} {m.id === stats.current_model && '★'}
+                        </div>
+                        <div style={{ fontSize: '12px', color: 'var(--color-text-secondary)' }}>{m.provider} provider</div>
+                      </td>
+                      <td style={{ padding: '12px', fontFamily: 'monospace' }}>{m.requests}</td>
+                      <td style={{ padding: '12px', fontFamily: 'monospace' }}>
+                        {hasData ? `${m.average_prompt_tokens.toFixed(0)} / ${m.average_response_tokens.toFixed(0)}` : 'N/A'}
+                      </td>
+                      <td style={{ padding: '12px', color: hasData ? (m.success_rate >= 90 ? 'var(--color-green)' : '#ffaa00') : '#ccc' }}>
+                        {hasData ? `${m.success_rate}%` : 'N/A'}
+                      </td>
+                      <td style={{ padding: '12px', color: m.tool_calls_attempted > 0 ? (m.tool_success_rate >= 90 ? 'var(--color-green)' : '#ffaa00') : '#ccc' }}>
+                        {m.tool_calls_attempted > 0 ? `${m.tool_success_rate}%` : 'N/A'}
+                      </td>
+                      <td style={{ padding: '12px', fontFamily: 'monospace', color: m.rate_limit_events > 0 ? '#ff5555' : '#ccc' }}>
+                        {m.rate_limit_events}
+                      </td>
+                      <td style={{ padding: '12px', fontSize: '13px' }}>
+                        {m.recent_errors && m.recent_errors.length > 0 ? (
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', color: '#ff5555' }}>
+                            {m.recent_errors.slice(-2).map((err, idx) => (
+                              <div key={idx} style={{ overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '200px', whiteSpace: 'nowrap' }} title={err}>
+                                • {err}
+                              </div>
+                            ))}
+                          </div>
+                        ) : (
+                          <span style={{ color: 'var(--color-text-secondary)' }}>None</span>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
         </div>
       </div>
     );
@@ -992,6 +1721,245 @@ export default function App() {
     );
   };
 
+  const renderDiagnostics = () => {
+    if (!diagnostics) {
+      return (
+        <div style={{ padding: '40px', textAlign: 'center', color: '#888' }}>
+          Loading developer diagnostics data from backend...
+        </div>
+      );
+    }
+
+    const {
+      active_provider,
+      active_model,
+      model_capabilities,
+      discovery_source,
+      last_sync_time,
+      last_request_id,
+      last_request_message,
+      last_request_strategy,
+      last_request_tools,
+      last_response_status,
+      last_response_time_ms,
+      last_input_tokens,
+      last_output_tokens,
+      last_exception,
+      last_exception_type,
+      last_successful_request_id,
+      last_provider_payload,
+      stage_timings,
+      last_executed_tool,
+      tool_execution_time_ms,
+      tool_status,
+      tool_output,
+      tool_exception,
+    } = diagnostics;
+
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '24px', paddingBottom: '40px' }}>
+        
+        {/* Row 1: Model & Provider Metadata */}
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: '20px' }}>
+          <div className="card">
+            <h3 className="card-title">🔬 Active Model Metadata</h3>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', marginTop: '16px' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', borderBottom: '1px solid #222', paddingBottom: '8px' }}>
+                <span style={{ color: '#888' }}>Active Provider:</span>
+                <span style={{ fontWeight: 'bold', color: 'var(--color-green)' }}>{active_provider?.toUpperCase()}</span>
+              </div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', borderBottom: '1px solid #222', paddingBottom: '8px' }}>
+                <span style={{ color: '#888' }}>Active Model:</span>
+                <span style={{ fontWeight: 'bold' }}>{active_model}</span>
+              </div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', borderBottom: '1px solid #222', paddingBottom: '8px' }}>
+                <span style={{ color: '#888' }}>Discovery Source:</span>
+                <span style={{ textTransform: 'capitalize' }}>{discovery_source}</span>
+              </div>
+              <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                <span style={{ color: '#888' }}>Last Registry Sync:</span>
+                <span>{last_sync_time}</span>
+              </div>
+            </div>
+          </div>
+
+          <div className="card">
+            <h3 className="card-title">⚡ Capabilities & Limits</h3>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', marginTop: '16px' }}>
+              <span className={`badge ${model_capabilities?.supports_chat ? 'success' : 'danger'}`}>
+                {model_capabilities?.supports_chat ? '✓ Supports Chat' : '✗ No Chat'}
+              </span>
+              <span className={`badge ${model_capabilities?.supports_tools ? 'success' : 'danger'}`}>
+                {model_capabilities?.supports_tools ? '✓ Supports Tools' : '✗ No Tools'}
+              </span>
+              <span className={`badge ${model_capabilities?.supports_json_mode ? 'success' : 'danger'}`}>
+                {model_capabilities?.supports_json_mode ? '✓ Supports JSON Mode' : '✗ No JSON'}
+              </span>
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', marginTop: '20px' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', borderBottom: '1px solid #222', paddingBottom: '8px' }}>
+                <span style={{ color: '#888' }}>Context Window:</span>
+                <span>{model_capabilities?.context_window?.toLocaleString()} tokens</span>
+              </div>
+              <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                <span style={{ color: '#888' }}>Output Token Limit:</span>
+                <span>{model_capabilities?.output_token_limit?.toLocaleString()} tokens</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Row 2: Request Telemetry Summary */}
+        <div className="card">
+          <h3 className="card-title">📡 Latest Request Tracing</h3>
+          {!last_request_id ? (
+            <p style={{ color: '#666', marginTop: '16px', fontStyle: 'italic' }}>No chat requests traced in this session yet.</p>
+          ) : (
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '16px', marginTop: '16px' }}>
+              <div style={{ backgroundColor: '#111', padding: '12px', borderRadius: '6px', border: '1px solid #222' }}>
+                <div style={{ fontSize: '12px', color: '#888', marginBottom: '4px' }}>Request ID</div>
+                <div style={{ fontWeight: 'bold', fontFamily: 'monospace', fontSize: '15px' }}>{last_request_id}</div>
+              </div>
+              <div style={{ backgroundColor: '#111', padding: '12px', borderRadius: '6px', border: '1px solid #222' }}>
+                <div style={{ fontSize: '12px', color: '#888', marginBottom: '4px' }}>Latency / Response Time</div>
+                <div style={{ fontWeight: 'bold', fontSize: '16px', color: 'var(--color-green)' }}>{last_response_time_ms} ms</div>
+              </div>
+              <div style={{ backgroundColor: '#111', padding: '12px', borderRadius: '6px', border: '1px solid #222' }}>
+                <div style={{ fontSize: '12px', color: '#888', marginBottom: '4px' }}>Chosen Strategy</div>
+                <div style={{ fontWeight: 'bold', fontSize: '15px' }}>{last_request_strategy || 'None'}</div>
+              </div>
+              <div style={{ backgroundColor: '#111', padding: '12px', borderRadius: '6px', border: '1px solid #222' }}>
+                <div style={{ fontSize: '12px', color: '#888', marginBottom: '4px' }}>Status</div>
+                <div>
+                  <span className={`badge ${last_response_status === 'success' ? 'success' : 'danger'}`} style={{ fontSize: '12px', padding: '4px 8px' }}>
+                    {last_response_status.toUpperCase()}
+                  </span>
+                </div>
+              </div>
+              <div style={{ backgroundColor: '#111', padding: '12px', borderRadius: '6px', border: '1px solid #222' }}>
+                <div style={{ fontSize: '12px', color: '#888', marginBottom: '4px' }}>Tokens (In / Out)</div>
+                <div style={{ fontWeight: 'bold' }}>{last_input_tokens} / {last_output_tokens}</div>
+              </div>
+            </div>
+          )}
+
+          {last_request_id && (
+            <div style={{ marginTop: '16px', backgroundColor: '#111', padding: '12px', borderRadius: '6px', border: '1px solid #222' }}>
+              <div style={{ fontSize: '12px', color: '#888', marginBottom: '4px' }}>User Prompt</div>
+              <div style={{ fontStyle: 'italic', color: '#ccc' }}>"{last_request_message}"</div>
+            </div>
+          )}
+        </div>
+
+        {/* Row 3: Tool Execution Audit Details */}
+        <div className="card">
+          <h3 className="card-title">🛠️ Tool Execution Audit</h3>
+          {!last_executed_tool ? (
+            <p style={{ color: '#666', marginTop: '16px', fontStyle: 'italic' }}>No tool calls executed in the last request.</p>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '16px', marginTop: '16px' }}>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '16px' }}>
+                <div style={{ backgroundColor: '#111', padding: '12px', borderRadius: '6px', border: '1px solid #222' }}>
+                  <div style={{ fontSize: '12px', color: '#888', marginBottom: '4px' }}>Last Executed Tool</div>
+                  <div style={{ fontWeight: 'bold', fontFamily: 'monospace', color: 'var(--color-green)' }}>{last_executed_tool}</div>
+                </div>
+                <div style={{ backgroundColor: '#111', padding: '12px', borderRadius: '6px', border: '1px solid #222' }}>
+                  <div style={{ fontSize: '12px', color: '#888', marginBottom: '4px' }}>Tool Latency</div>
+                  <div style={{ fontWeight: 'bold', fontSize: '16px' }}>{tool_execution_time_ms} ms</div>
+                </div>
+                <div style={{ backgroundColor: '#111', padding: '12px', borderRadius: '6px', border: '1px solid #222' }}>
+                  <div style={{ fontSize: '12px', color: '#888', marginBottom: '4px' }}>Tool Outcome</div>
+                  <div>
+                    <span className={`badge ${tool_status === 'success' ? 'success' : 'danger'}`}>
+                      {tool_status.toUpperCase()}
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              {tool_output && (
+                <div style={{ backgroundColor: '#111', padding: '12px', borderRadius: '6px', border: '1px solid #222' }}>
+                  <div style={{ fontSize: '12px', color: '#888', marginBottom: '4px' }}>Sanitized Tool Output</div>
+                  <pre style={{ margin: 0, fontFamily: 'monospace', fontSize: '13px', color: '#ccc', whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>
+                    {tool_output}
+                  </pre>
+                </div>
+              )}
+
+              {tool_exception && (
+                <div style={{ backgroundColor: '#3a1111', padding: '12px', borderRadius: '6px', border: '1px solid #ff5555' }}>
+                  <div style={{ fontSize: '12px', color: '#ff8888', marginBottom: '4px', fontWeight: 'bold' }}>Tool Exception raised</div>
+                  <div style={{ fontFamily: 'monospace', color: '#ffcccc', fontSize: '13px' }}>{tool_exception}</div>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+
+        {/* Row 4: Pipeline Stage Timings */}
+        {last_request_id && stage_timings && stage_timings.length > 0 && (
+          <div className="card">
+            <h3 className="card-title">⏱️ Pipeline Stage Timings</h3>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '14px', marginTop: '20px' }}>
+              {stage_timings.map((stage, idx) => {
+                const totalDuration = stage_timings.reduce((sum, t) => sum + t.elapsed_ms, 0);
+                const percentage = totalDuration > 0 ? (stage.elapsed_ms / totalDuration) * 100 : 0;
+                return (
+                  <div key={idx} style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '13px' }}>
+                      <span style={{ fontWeight: 'bold', fontFamily: 'monospace', color: '#ccc' }}>{stage.stage}</span>
+                      <span style={{ color: stage.error ? '#ff5555' : '#888' }}>
+                        {stage.elapsed_ms} ms {stage.error && '(Failed)'}
+                      </span>
+                    </div>
+                    <div style={{ height: '8px', backgroundColor: '#222', borderRadius: '4px', overflow: 'hidden' }}>
+                      <div style={{ 
+                        height: '100%', 
+                        width: `${percentage}%`, 
+                        backgroundColor: stage.error ? '#ff5555' : 'var(--color-green)',
+                        borderRadius: '4px',
+                        transition: 'width 0.5s ease-in-out'
+                      }} />
+                    </div>
+                    {stage.error && (
+                      <span style={{ fontSize: '11px', color: '#ff8888', fontFamily: 'monospace' }}>Error: {stage.error}</span>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
+        {/* Row 5: Raw Provider Request Payload */}
+        {last_request_id && last_provider_payload && Object.keys(last_provider_payload).length > 0 && (
+          <div className="card">
+            <h3 className="card-title">💾 Raw LLM Provider Payload (Sanitized)</h3>
+            <div style={{ marginTop: '16px', maxHeight: '350px', overflowY: 'auto', backgroundColor: '#111', border: '1px solid #222', borderRadius: '6px', padding: '12px' }}>
+              <pre style={{ margin: 0, fontFamily: 'monospace', fontSize: '12px', color: '#88e088', whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>
+                {JSON.stringify(last_provider_payload, null, 2)}
+              </pre>
+            </div>
+          </div>
+        )}
+
+        {/* Row 6: Last Exception (if any) */}
+        {last_exception && (
+          <div className="card" style={{ backgroundColor: '#220808', border: '1px solid #ff4444' }}>
+            <h3 className="card-title" style={{ color: '#ff5555' }}>⚠️ Last Pipeline Exception Details</h3>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginTop: '16px' }}>
+              <div><span style={{ color: '#ff8888', fontSize: '13px' }}>Exception Type: </span><span style={{ fontWeight: 'bold', fontFamily: 'monospace' }}>{last_exception_type}</span></div>
+              <pre style={{ margin: 0, padding: '12px', backgroundColor: '#110404', borderRadius: '4px', fontFamily: 'monospace', fontSize: '13px', color: '#ffcccc', whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>
+                {last_exception}
+              </pre>
+            </div>
+          </div>
+        )}
+
+      </div>
+    );
+  };
+
   return (
     <div className="app-container">
       
@@ -1020,8 +1988,17 @@ export default function App() {
           <div className={`nav-item ${activeTab === 'config' ? 'active' : ''}`} onClick={() => setActiveTab('config')}>
             ⚙️ AI Config
           </div>
+          <div className={`nav-item ${activeTab === 'model_manager' ? 'active' : ''}`} onClick={() => setActiveTab('model_manager')}>
+            🤖 Model Manager
+          </div>
+          <div className={`nav-item ${activeTab === 'model_benchmarks' ? 'active' : ''}`} onClick={() => setActiveTab('model_benchmarks')}>
+            📊 Model Benchmarks
+          </div>
           <div className={`nav-item ${activeTab === 'resources' ? 'active' : ''}`} onClick={() => setActiveTab('resources')}>
             📊 Resource Manager
+          </div>
+          <div className={`nav-item ${activeTab === 'prompt_profiler' ? 'active' : ''}`} onClick={() => setActiveTab('prompt_profiler')}>
+            ⚡ Prompt Profiler
           </div>
           <div className={`nav-item ${activeTab === 'memory' ? 'active' : ''}`} onClick={() => setActiveTab('memory')}>
             🧠 Memory Manager
@@ -1032,10 +2009,13 @@ export default function App() {
           <div className={`nav-item ${activeTab === 'logs' ? 'active' : ''}`} onClick={() => setActiveTab('logs')}>
             📜 Event Logs
           </div>
+          <div className={`nav-item ${activeTab === 'diagnostics' ? 'active' : ''}`} onClick={() => { setActiveTab('diagnostics'); fetchDiagnostics(); }}>
+            🔬 Diagnostics
+          </div>
         </div>
 
         <div className="sidebar-footer">
-          Platform: v0.4.3<br />
+          Platform: v0.4.5.2<br />
           Core Engine: FastAPI & React
         </div>
       </div>
@@ -1049,18 +2029,26 @@ export default function App() {
             <h1 className="page-title">
               {activeTab === 'home' && 'System Dashboard'}
               {activeTab === 'config' && 'Model Configuration'}
+              {activeTab === 'model_manager' && 'Dynamic Model Registry'}
+              {activeTab === 'model_benchmarks' && 'AI Model Performance Benchmarks'}
               {activeTab === 'resources' && 'AI Resource Telemetry'}
+              {activeTab === 'prompt_profiler' && 'Prompt Optimization Profiler'}
               {activeTab === 'memory' && 'Saved Memory Manager'}
               {activeTab === 'tools' && 'Registered Tools Registry'}
               {activeTab === 'logs' && 'System logs & Diagnostics'}
+              {activeTab === 'diagnostics' && 'Developer Diagnostics'}
             </h1>
             <p className="page-subtitle">
               {activeTab === 'home' && 'Live status overview of the Minecraft assistant backend.'}
               {activeTab === 'config' && 'Fine-tune model temperatures, quotas, API keys, and rate limits.'}
+              {activeTab === 'model_manager' && 'Switch active LLM models, view context windows, and update rate limits.'}
+              {activeTab === 'model_benchmarks' && 'Benchmark latency, success rates, token usage, and tool accuracy side-by-side.'}
               {activeTab === 'resources' && 'Verify input/output token counts, response latency, and hourly usage.'}
+              {activeTab === 'prompt_profiler' && 'Analyze LLM prompt composition, optimization statistics, and token savings.'}
               {activeTab === 'memory' && 'Directly inspect and modify locations, notes, and preference indexes.'}
               {activeTab === 'tools' && 'Verify schemas, descriptions, and descriptions of registered tools.'}
               {activeTab === 'logs' && 'Realtime logs aggregated from both launcher and assistant subprocesses.'}
+              {activeTab === 'diagnostics' && 'Live request tracing, pipeline stage timings, model capabilities, and exception details.'}
             </p>
           </div>
           
@@ -1079,10 +2067,14 @@ export default function App() {
         {/* Selected Tab Render */}
         {activeTab === 'home' && renderHome()}
         {activeTab === 'config' && renderConfig()}
+        {activeTab === 'model_manager' && renderModelManager()}
+        {activeTab === 'model_benchmarks' && renderModelBenchmarks()}
         {activeTab === 'resources' && renderResources()}
+        {activeTab === 'prompt_profiler' && renderPromptProfiler()}
         {activeTab === 'memory' && renderMemory()}
         {activeTab === 'tools' && renderTools()}
         {activeTab === 'logs' && renderLogs()}
+        {activeTab === 'diagnostics' && renderDiagnostics()}
 
         {/* Global Toast Notifier */}
         {toast && (
