@@ -259,9 +259,36 @@ class ResponseGenerator:
                 except Exception:
                     pass
 
-            # Stage E: LLM Call
+            # Stage E: LLM Call – time-budget guarded
             if ctx:
                 ctx.begin_stage("generator:llm_call")
+
+            # Time-budget guard: if the request is already close to its overall
+            # deadline, skip the second LLM call and return the tool results directly
+            # rather than adding another 20-35s and triggering a client timeout.
+            elapsed_s = ctx.elapsed_seconds() if ctx else 0.0
+            if elapsed_s > 38.0:
+                if ctx:
+                    ctx.end_stage(
+                        error=f"Time budget exceeded ({elapsed_s:.1f}s > 38s); skipping generator LLM call",
+                        failure_category="GENERATOR_TIMEOUT",
+                    )
+                    try:
+                        from request_context import FailureCategory
+                        ctx.set_failure(FailureCategory.GENERATOR_TIMEOUT)
+                    except Exception:
+                        pass
+                log_message("WARNING", (
+                    f"{req_id} [GENERATOR_TIMEOUT] Skipping HYBRID generator LLM call – "
+                    f"request already at {elapsed_s:.1f}s (> 38s budget). "
+                    "Returning tool results directly."
+                ))
+                return (
+                    "I successfully gathered the requested game information, but ran out of "
+                    "time synthesizing a detailed response. Here's the raw data:\n"
+                    + tool_results
+                )
+
             try:
                 response_text = execute_llm_request_with_rate_limits(
                     self.provider_name, self.model_name,
@@ -275,14 +302,35 @@ class ResponseGenerator:
                     ctx.end_stage()
             except Exception as llm_err:
                 if ctx:
-                    ctx.end_stage(error=str(llm_err))
-                    ctx.record_exception(llm_err)
-                log_message("ERROR", f"{req_id} [Generator] LLM synthesis call failed: {type(llm_err).__name__}: {llm_err}")
-                return f"I completed the tool checks, but encountered an error synthesizing the final advice. Raw results:\n{tool_results}"
+                    try:
+                        from request_context import FailureCategory
+                        cat = FailureCategory.GENERATOR_TIMEOUT if isinstance(llm_err, TimeoutError) else FailureCategory.UNKNOWN_PROVIDER_EXCEPTION
+                        ctx.end_stage(error=str(llm_err), failure_category=cat)
+                        ctx.record_exception(llm_err, failure_category=cat)
+                    except Exception:
+                        ctx.end_stage(error=str(llm_err))
+                        ctx.record_exception(llm_err)
+                log_message("ERROR", (
+                    f"{req_id} [Generator] LLM synthesis call failed: "
+                    f"{type(llm_err).__name__}: {llm_err}"
+                ))
+                return (
+                    "I successfully gathered the requested game information, "
+                    "but encountered an internal error while generating a conversational response. "
+                    "Here's the raw data:\n"
+                    + tool_results
+                )
 
             # Stage F: Parse Response
             if ctx:
                 ctx.begin_stage("generator:parse_response")
+
+            # Log raw response before parsing so failures are diagnosable
+            log_message("INFO", (
+                f"{req_id} [Generator] Raw synthesis response "
+                f"(chars={len(response_text)}): "
+                f"{response_text[:300].replace(chr(10), ' ')!r}"
+            ))
 
             def clean_markdown_json(text: str) -> str:
                 t = text.strip()
@@ -302,11 +350,26 @@ class ResponseGenerator:
                         ctx.end_stage()
                     return data["reply"]
             except Exception as parse_err:
-                log_message("WARNING", f"{req_id} [Generator] JSON parse failed on synthesis response: {parse_err}")
+                log_message("WARNING", (
+                    f"{req_id} [Generator] JSON parse failed on synthesis response: "
+                    f"{parse_err}. Raw: {cleaned_response[:200]!r}"
+                ))
+                if ctx:
+                    try:
+                        from request_context import FailureCategory
+                        ctx.end_stage(
+                            error=str(parse_err),
+                            failure_category=FailureCategory.JSON_PARSE_ERROR,
+                        )
+                    except Exception:
+                        ctx.end_stage(error=str(parse_err))
+                # Fallback: return plain text if JSON parse fails (Gemma / non-JSON mode)
+                if ctx:
+                    ctx.begin_stage("generator:parse_response")
 
             if ctx:
                 ctx.end_stage()
-            # Fallback: return raw text if JSON parsing fails (Gemma may return plain text)
+            # Fallback: return raw text if JSON parsing fails
             return response_text.strip()
 
         # Unknown strategy – safe fallback

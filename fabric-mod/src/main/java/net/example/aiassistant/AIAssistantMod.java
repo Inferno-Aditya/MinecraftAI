@@ -40,7 +40,13 @@ import java.util.ArrayList;
 
 public class AIAssistantMod implements ModInitializer {
     private static final String BACKEND_URL = "http://localhost:8000/chat";
-    private static final int TIMEOUT_SECONDS = 10;
+    // Connect timeout: time to establish TCP connection to the local backend.
+    // Keep short – if the backend isn’t running, we want a fast failure.
+    private static final int CONNECT_TIMEOUT_SECONDS = 10;
+    // Request (read) timeout: time to receive a COMPLETE response from the backend.
+    // Must be > backend’s overall pipeline timeout (43s) to avoid the client
+    // cancelling a request that the backend is still processing.
+    private static final int REQUEST_TIMEOUT_SECONDS = 45;
     private static final Gson gson = new Gson();
     private static Path logPath;
 
@@ -388,14 +394,14 @@ public class AIAssistantMod implements ModInitializer {
 
         // Asynchronously call local backend
         HttpClient client = HttpClient.newBuilder()
-            .connectTimeout(Duration.ofSeconds(TIMEOUT_SECONDS))
+            .connectTimeout(Duration.ofSeconds(CONNECT_TIMEOUT_SECONDS))
             .build();
 
         HttpRequest request = HttpRequest.newBuilder()
             .uri(URI.create(BACKEND_URL))
             .header("Content-Type", "application/json")
             .POST(HttpRequest.BodyPublishers.ofString(requestBody))
-            .timeout(Duration.ofSeconds(TIMEOUT_SECONDS))
+            .timeout(Duration.ofSeconds(REQUEST_TIMEOUT_SECONDS))
             .build();
 
         CompletableFuture.supplyAsync(() -> {

@@ -638,10 +638,47 @@ def estimate_tokens(text: str) -> int:
     return len(text) // 4
 
 
+# Overall timeout constants – these bound the ENTIRE execute_llm_request_with_rate_limits
+# call including rate-limit sleeps, retries, and the provider round-trip.
+OVERALL_REQUEST_TIMEOUT_S = 43.0   # Backend must reply before the Minecraft mod's 45s fires
+RATE_LIMIT_LOOP_BUDGET_S  = 15.0   # Max time to spend in the proactive rate-limit sleep loop
+
+
 def is_rate_limit_exception(e: Exception) -> bool:
     """Helper to detect rate limit exceptions from common AI client libraries."""
     msg = str(e).lower()
-    return "429" in msg or "rate limit" in msg or "resourceexhausted" in msg or "quota" in msg
+    return (
+        "429" in msg
+        or "rate limit" in msg
+        or "resourceexhausted" in msg
+        or "quota" in msg
+    )
+
+
+def _classify_llm_exception(e: Exception) -> str:
+    """
+    Map an exception to a FailureCategory string.
+    Import from request_context at call time to avoid circular imports.
+    """
+    try:
+        from request_context import FailureCategory
+    except ImportError:
+        return "UNKNOWN_PROVIDER_EXCEPTION"
+
+    if isinstance(e, TimeoutError):
+        return FailureCategory.PROVIDER_TIMEOUT
+    if isinstance(e, (ConnectionError, OSError)):
+        return FailureCategory.CONNECTION_FAILURE
+    msg = str(e).lower()
+    if "429" in msg or "rate limit" in msg or "resourceexhausted" in msg:
+        return FailureCategory.RATE_LIMIT
+    if "quota" in msg and "daily" in msg:
+        return FailureCategory.DAILY_QUOTA_EXCEEDED
+    if "json" in msg or "parse" in msg:
+        return FailureCategory.JSON_PARSE_ERROR
+    if "empty" in msg or "null" in msg:
+        return FailureCategory.INVALID_PROVIDER_RESPONSE
+    return FailureCategory.UNKNOWN_PROVIDER_EXCEPTION
 
 
 def execute_llm_request_with_rate_limits(
@@ -656,8 +693,15 @@ def execute_llm_request_with_rate_limits(
 ) -> str:
     """
     Unified gateway function for executing LLM requests.
-    Handles proactive limit checks, sleep delay queueing, token estimation,
-    exponential retry backoffs for rate limits, latency tracking, and updates stats.
+
+    Reliability guarantees:
+      • Overall wall-clock timeout of OVERALL_REQUEST_TIMEOUT_S (43 s) –
+        the backend WILL return before the Minecraft mod's 45-second HTTP
+        timeout fires, even if Gemini is slow or retries accumulate.
+      • Rate-limit sleep loop is bounded by RATE_LIMIT_LOOP_BUDGET_S (15 s).
+      • max_retries reduced to 2 (was 3) – caps worst-case retry latency.
+      • Every log line includes the Request ID.
+      • Every failure path assigns a FailureCategory to the context.
     """
     try:
         from main import log_message
@@ -666,6 +710,13 @@ def execute_llm_request_with_rate_limits(
             print(f"[{level}] {msg}")
 
     req_id = ctx.prefix() if ctx else ""
+    wall_start = time.time()
+
+    def wall_elapsed() -> float:
+        return time.time() - wall_start
+
+    def remaining_budget() -> float:
+        return OVERALL_REQUEST_TIMEOUT_S - wall_elapsed()
 
     # Resolve provider and model from ModelProfile if passed
     if model_profile:
@@ -674,123 +725,225 @@ def execute_llm_request_with_rate_limits(
 
     # Estimate input tokens for rate limiting checks
     estimated_input = estimate_tokens(system_prompt) + estimate_tokens(user_prompt)
-    
-    # 1. Proactive Rate Limiting Delay Queue
-    delay_cycles = 0
-    while True:
-        limit_status = resource_manager.limiter.check_limits(provider_name, estimated_input)
-        if limit_status == "daily_quota_exceeded":
-            log_message("WARNING", f"{req_id} Daily API Quota limit exceeded for provider '{provider_name}'. Blocking request.")
-            raise Exception(f"Daily request quota limit exceeded for provider '{provider_name}'.")
 
-        if limit_status in ["rpm_exceeded", "tpm_exceeded"]:
-            wait_sec = resource_manager.limiter.get_proactive_wait_time(provider_name, estimated_input)
+    # ── 1. Proactive Rate-Limit Delay Queue ─────────────────────────────
+    # Bounded by RATE_LIMIT_LOOP_BUDGET_S to prevent the loop from consuming
+    # the entire overall request budget before the LLM is even called.
+    delay_cycles = 0
+    rate_loop_start = time.time()
+    while True:
+        # Abort delay loop if we are already close to the overall deadline
+        if wall_elapsed() >= OVERALL_REQUEST_TIMEOUT_S - 5.0:
+            log_message("WARNING", (
+                f"{req_id} Rate-limit delay loop aborted – overall budget nearly"
+                f" exhausted ({wall_elapsed():.1f}s / {OVERALL_REQUEST_TIMEOUT_S}s)."
+            ))
+            break
+
+        limit_status = resource_manager.limiter.check_limits(provider_name, estimated_input)
+
+        if limit_status == "daily_quota_exceeded":
+            log_message("WARNING", (
+                f"{req_id} [DAILY_QUOTA_EXCEEDED] Daily API quota exceeded for "
+                f"provider '{provider_name}'. Blocking request."
+            ))
+            if ctx:
+                try:
+                    from request_context import FailureCategory
+                    ctx.set_failure(FailureCategory.DAILY_QUOTA_EXCEEDED)
+                except Exception:
+                    pass
+            raise Exception(
+                f"Daily request quota limit exceeded for provider '{provider_name}'."
+            )
+
+        if limit_status in ("rpm_exceeded", "tpm_exceeded"):
+            wait_sec = resource_manager.limiter.get_proactive_wait_time(
+                provider_name, estimated_input
+            )
+            # Cap individual sleep to what remains in the loop budget
+            loop_remaining = RATE_LIMIT_LOOP_BUDGET_S - (time.time() - rate_loop_start)
+            wait_sec = min(wait_sec, max(0.0, loop_remaining))
+
             if wait_sec > 0.0:
-                log_message("WARNING", f"{req_id} Proactive rate limit triggered ({limit_status}). Delaying request by {wait_sec:.2f}s...")
+                log_message("WARNING", (
+                    f"{req_id} [{limit_status.upper()}] Proactive rate limit triggered. "
+                    f"Delaying {wait_sec:.2f}s (cycle {delay_cycles + 1})…"
+                ))
                 resource_manager.record_rate_limit_event(model_name)
                 time.sleep(wait_sec)
                 delay_cycles += 1
-                if delay_cycles > 5:  # safety breakout
+                if delay_cycles > 5 or (time.time() - rate_loop_start) >= RATE_LIMIT_LOOP_BUDGET_S:
+                    log_message("WARNING", (
+                        f"{req_id} Rate-limit delay loop safety breakout after "
+                        f"{delay_cycles} cycles / "
+                        f"{round(time.time() - rate_loop_start, 1)}s."
+                    ))
                     break
                 continue
         break
 
-    # Initialize Provider
+    # ── 2. Provider Initialization ──────────────────────────────────────
+    log_message("INFO", (
+        f"{req_id} Initializing LLM provider – "
+        f"provider={provider_name} model={model_name} "
+        f"request_type={request_type} elapsed={wall_elapsed():.2f}s"
+    ))
     try:
         provider = get_provider(provider_name, model_name)
     except Exception as init_err:
-        log_message("ERROR", f"{req_id} LLM Provider initialization failed: {init_err}")
+        log_message("ERROR", (
+            f"{req_id} [PROVIDER_INIT_ERROR] LLM provider initialization failed: "
+            f"{type(init_err).__name__}: {init_err}"
+        ))
+        if ctx:
+            try:
+                from request_context import FailureCategory
+                ctx.set_failure(FailureCategory.PROVIDER_INIT_ERROR)
+            except Exception:
+                pass
         raise init_err
 
-    # 2. Run LLM call with reactive retries on 429 Rate Limits
-    max_retries = 3
+    log_message("INFO", f"{req_id} Provider initialized. Elapsed so far: {wall_elapsed():.2f}s")
+
+    # ── 3. LLM Call with Reactive Rate-Limit Retries ────────────────────
+    # max_retries reduced from 3 to 2 to cap worst-case latency:
+    #   2 retries × ~35s hard timeout = ~70s worst-case, but the overall
+    #   budget of 43s will fire first – making retries possible only when
+    #   earlier attempts finish quickly (e.g. fast 429 responses).
+    max_retries = 2
     backoff = 2.0
-    start_time = time.time()
-    
+    call_start = time.time()
+
     for attempt in range(max_retries + 1):
-        is_retry = (attempt > 0)
+        is_retry = attempt > 0
+
+        # Check overall budget before every attempt
+        budget_left = remaining_budget()
+        if budget_left <= 2.0:
+            timeout_msg = (
+                f"{req_id} [REQUEST_BUDGET_EXCEEDED] Overall request budget "
+                f"({OVERALL_REQUEST_TIMEOUT_S}s) exhausted before attempt {attempt + 1}. "
+                f"Elapsed: {wall_elapsed():.2f}s. Aborting."
+            )
+            log_message("ERROR", timeout_msg)
+            if ctx:
+                try:
+                    from request_context import FailureCategory
+                    ctx.set_failure(FailureCategory.REQUEST_BUDGET_EXCEEDED)
+                except Exception:
+                    pass
+            resource_manager.tracker.record_request(
+                provider=provider_name, model=model_name,
+                input_tokens=estimated_input, output_tokens=0,
+                latency=wall_elapsed(), success=False,
+                error_msg="REQUEST_BUDGET_EXCEEDED",
+                is_retry=is_retry, prompt_profile=prompt_profile,
+                request_id=ctx.request_id if ctx else None,
+            )
+            resource_manager.statistics.record_session_request(
+                success=False, input_tokens=estimated_input, output_tokens=0,
+                latency=wall_elapsed(), is_retry=is_retry,
+            )
+            raise TimeoutError(
+                f"Overall request budget ({OVERALL_REQUEST_TIMEOUT_S}s) exceeded "
+                f"before LLM call attempt {attempt + 1}."
+            )
+
         try:
             # Reload environment variables in case key was updated dynamically
             load_dotenv(override=True)
 
+            log_message("INFO", (
+                f"{req_id} LLM call attempt {attempt + 1}/{max_retries + 1} – "
+                f"elapsed={wall_elapsed():.2f}s budget_left={budget_left:.1f}s"
+            ))
+
             response_text = provider.generate(system_prompt, user_prompt, ctx=ctx)
-            latency = time.time() - start_time
-            
-            # Extract actual or estimate tokens
+            latency = time.time() - call_start
+
+            # Extract actual or estimated tokens
             input_tokens = estimated_input
             output_tokens = estimate_tokens(response_text)
-            
-            # If the provider is Gemini, check if it returned token usage in response
-            # Since GeminiProvider returns response.text (a string), we don't have usage_metadata on it directly,
-            # but we can look for it in the provider or use our estimate.
-            # To be robust, let's check if the provider object has recorded usage metadata
-            # or if we can extract it.
-            # We will also make GeminiProvider set a `last_usage_metadata` attribute when it completes.
+
             if hasattr(provider, "last_usage_metadata") and provider.last_usage_metadata:
                 input_tokens = provider.last_usage_metadata.get("prompt_tokens", input_tokens)
                 output_tokens = provider.last_usage_metadata.get("completion_tokens", output_tokens)
 
-            # Update prompt_profile total tokens to match actual parsed input tokens if we have it
+            # Update prompt_profile total tokens
             if prompt_profile:
                 if hasattr(prompt_profile, "total_prompt_tokens"):
                     prompt_profile.total_prompt_tokens = input_tokens
                 elif isinstance(prompt_profile, dict):
                     prompt_profile["total_prompt_tokens"] = input_tokens
 
-            # Record successful request
+            log_message("INFO", (
+                f"{req_id} LLM call succeeded – "
+                f"attempt={attempt + 1} latency={round(latency * 1000)}ms "
+                f"total_elapsed={wall_elapsed():.2f}s "
+                f"in_tokens={input_tokens} out_tokens={output_tokens}"
+            ))
+
             resource_manager.tracker.record_request(
-                provider=provider_name,
-                model=model_name,
-                input_tokens=input_tokens,
-                output_tokens=output_tokens,
-                latency=latency,
-                success=True,
-                is_retry=is_retry,
+                provider=provider_name, model=model_name,
+                input_tokens=input_tokens, output_tokens=output_tokens,
+                latency=latency, success=True, is_retry=is_retry,
                 prompt_profile=prompt_profile,
-                request_id=ctx.request_id if ctx else None
+                request_id=ctx.request_id if ctx else None,
             )
             resource_manager.statistics.record_session_request(
-                success=True,
-                input_tokens=input_tokens,
-                output_tokens=output_tokens,
-                latency=latency,
-                is_retry=is_retry
+                success=True, input_tokens=input_tokens, output_tokens=output_tokens,
+                latency=latency, is_retry=is_retry,
             )
-            
             return response_text
-            
+
         except Exception as e:
-            latency = time.time() - start_time
+            latency = time.time() - call_start
+            category = _classify_llm_exception(e)
 
-            # If it's a rate limit exception, and we still have retries remaining, sleep and retry
+            # Rate-limit retry logic
             if is_rate_limit_exception(e) and attempt < max_retries:
-                log_message("WARNING", f"{req_id} LLM rate limit (429) hit on attempt {attempt + 1}. Retrying in {backoff}s... Error: {e}")
-                resource_manager.record_rate_limit_event(model_name)
-                time.sleep(backoff)
-                backoff *= 2.0
-                continue
+                budget_after_sleep = remaining_budget() - backoff
+                if budget_after_sleep > 5.0:
+                    log_message("WARNING", (
+                        f"{req_id} [{category}] Rate limit hit on attempt {attempt + 1}. "
+                        f"Retrying in {backoff:.1f}s (budget_left={budget_after_sleep:.1f}s after sleep)… "
+                        f"Error: {e}"
+                    ))
+                    resource_manager.record_rate_limit_event(model_name)
+                    time.sleep(backoff)
+                    backoff *= 2.0
+                    continue
+                else:
+                    log_message("WARNING", (
+                        f"{req_id} [{category}] Rate limit hit but insufficient budget "
+                        f"for retry ({budget_after_sleep:.1f}s would remain). Failing fast."
+                    ))
 
-            # Log and record failed request
-            log_message("ERROR", f"{req_id} LLM request failed after {latency:.2f}s [{request_type}]: {type(e).__name__}: {e}")
-            
-            # Record failed request
+            # Terminal failure – log, record stats, re-raise
+            log_message("ERROR", (
+                f"{req_id} [{category}] LLM request failed – "
+                f"attempt={attempt + 1}/{max_retries + 1} "
+                f"elapsed={wall_elapsed():.2f}s "
+                f"[{request_type}]: {type(e).__name__}: {e}"
+            ))
+
+            if ctx:
+                try:
+                    from request_context import FailureCategory
+                    ctx.set_failure(category)
+                except Exception:
+                    pass
+
             resource_manager.tracker.record_request(
-                provider=provider_name,
-                model=model_name,
-                input_tokens=estimated_input,
-                output_tokens=0,
-                latency=latency,
-                success=False,
-                error_msg=str(e),
-                is_retry=is_retry,
-                prompt_profile=prompt_profile,
-                request_id=ctx.request_id if ctx else None
+                provider=provider_name, model=model_name,
+                input_tokens=estimated_input, output_tokens=0,
+                latency=latency, success=False, error_msg=str(e),
+                is_retry=is_retry, prompt_profile=prompt_profile,
+                request_id=ctx.request_id if ctx else None,
             )
             resource_manager.statistics.record_session_request(
-                success=False,
-                input_tokens=estimated_input,
-                output_tokens=0,
-                latency=latency,
-                is_retry=is_retry
+                success=False, input_tokens=estimated_input, output_tokens=0,
+                latency=latency, is_retry=is_retry,
             )
             raise e

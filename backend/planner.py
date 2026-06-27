@@ -587,7 +587,7 @@ def plan(message: str, player_context: PlayerContext, ctx=None) -> PlannerResult
     if config.get("enable_prompt_logging", True):
         log_prompt_debug(system_prompt, user_prompt)
 
-    log_message("INFO", f"{req_id} Planning via provider='{provider_name}' model='{model_name}' intent={intent}")
+    log_message("INFO", f"{req_id} Planning via provider='{provider_name}' model='{model_name}' intent={intent} elapsed={round(ctx.elapsed_seconds() * 1000) if ctx else 0}ms")
 
     if ctx:
         ctx.begin_stage("planner:llm_call")
@@ -643,13 +643,35 @@ def plan(message: str, player_context: PlayerContext, ctx=None) -> PlannerResult
             ctx.end_stage(error=str(parse_err))
         log_message("WARNING", f"{req_id} Initial LLM response parsing/validation failed: {str(parse_err)}")
 
-        # Retry exactly once with correction prompt
+        # Retry exactly once with correction prompt – only if we still have time budget
         correction_user_prompt = (
             f"Your previous response failed parsing/validation with error:\n{str(parse_err)}\n\n"
             f"Here is your previous response:\n{response_text}\n\n"
             f"Please correct it and return ONLY valid JSON matching the schema."
         )
 
+        # Time-budget guard: skip retry if the overall request is already close to its deadline.
+        # This prevents the correction retry from pushing total latency past the 43s backend
+        # timeout, which would cause the Minecraft client to see "AI server unavailable."
+        elapsed_s = ctx.elapsed_seconds() if ctx else 0.0
+        if elapsed_s > 35.0:
+            log_message("WARNING", (
+                f"{req_id} Skipping correction retry – request already elapsed "
+                f"{elapsed_s:.1f}s (> 35s budget). Returning knowledge fallback."
+            ))
+            if ctx:
+                try:
+                    from request_context import FailureCategory
+                    ctx.set_failure(FailureCategory.JSON_PARSE_ERROR)
+                except Exception:
+                    pass
+            result = PlannerResult(
+                reply="I had trouble formatting a response. Please rephrase your question.",
+                tool_calls=[],
+                response_strategy=ResponseStrategy.KNOWLEDGE,
+            )
+            validate_and_reason_decision(result, intent, classification, ctx, message, "Fallback (Time Budget)")
+            return result
         log_message("INFO", f"{req_id} Retrying LLM generation with auto-correction prompt...")
         if ctx:
             ctx.begin_stage("planner:llm_correction_retry")

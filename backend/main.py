@@ -1,4 +1,5 @@
 import os
+import asyncio
 import datetime
 import time
 from fastapi import FastAPI, HTTPException
@@ -45,7 +46,7 @@ except ImportError:
     from .memory import load_memory, save_memory
 
 try:
-    from request_context import RequestContext
+    from request_context import RequestContext, FailureCategory, RequestState
 except ImportError:
     from .request_context import RequestContext
 
@@ -519,6 +520,8 @@ def get_diagnostics():
         "last_output_tokens": last_ctx.get("output_tokens"),
         "last_exception": resource_manager.last_exception_message,
         "last_exception_type": last_ctx.get("last_exception_type"),
+        "failure_category": last_ctx.get("failure_category", "NONE"),
+        "current_state": last_ctx.get("current_state", "UNKNOWN"),
         "last_successful_request_id": resource_manager.last_successful_request_id,
         "last_provider_payload": last_ctx.get("last_payload", {}),
         "stage_timings": last_ctx.get("stage_timings", []),
@@ -565,6 +568,11 @@ def get_tools_health():
 # ─────────────────────────────────────────────────────────────
 # Chat endpoint – main pipeline
 # ─────────────────────────────────────────────────────────────
+
+# Overall backend timeout – must be less than the Minecraft mod's HTTP timeout
+# (AIAssistantMod.java REQUEST_TIMEOUT_SECONDS = 45). Set to 43 to give a
+# 2-second margin for serialization and network delivery.
+_CHAT_PIPELINE_TIMEOUT_S = 43.0
 
 def log_planner_debug(ctx: RequestContext, planned_result: PlannerResult) -> None:
     """
@@ -685,17 +693,82 @@ async def chat_endpoint(request: ChatRequest):
 
     # Create a unique RequestContext for this request
     ctx = RequestContext(user_message=message)
+    ctx.set_state(RequestState.QUEUED)
     log_message("INFO", f"{ctx.prefix()} Chat request received: '{message[:80]}{'...' if len(message) > 80 else ''}'")
 
+    try:
+        reply = await asyncio.wait_for(
+            _run_chat_pipeline(message, player, ctx),
+            timeout=_CHAT_PIPELINE_TIMEOUT_S,
+        )
+        return reply
+    except asyncio.TimeoutError:
+        # The pipeline exceeded the overall budget – finalize the context and
+        # return a graceful HTTP 200 response so the Minecraft mod displays a
+        # user-friendly message rather than "AI server unavailable."
+        try:
+            from request_context import FailureCategory
+            ctx.set_failure(FailureCategory.REQUEST_BUDGET_EXCEEDED)
+        except Exception:
+            pass
+        ctx.set_state(RequestState.FAILED)
+        ctx.finalize(status="timeout")
+        resource_manager.update_diagnostics(ctx)
+        log_message("ERROR", (
+            f"{ctx.prefix()} [REQUEST_BUDGET_EXCEEDED] Chat pipeline exceeded "
+            f"{_CHAT_PIPELINE_TIMEOUT_S}s overall timeout. "
+            f"Elapsed: {ctx.response_time_ms}ms."
+        ))
+        return ChatResponse(
+            reply="I'm taking too long to respond right now. Please try again in a moment.",
+            tool_calls=[],
+        )
+    except Exception as unhandled:
+        # Safety net: any unhandled exception must not crash the backend.
+        try:
+            from request_context import FailureCategory
+            ctx.record_exception(unhandled, failure_category=FailureCategory.UNKNOWN_PROVIDER_EXCEPTION)
+        except Exception:
+            pass
+        ctx.set_state(RequestState.FAILED)
+        ctx.finalize(status="error")
+        resource_manager.update_diagnostics(ctx)
+        log_message("ERROR", (
+            f"{ctx.prefix()} [UNHANDLED_EXCEPTION] Unexpected error in chat pipeline: "
+            f"{type(unhandled).__name__}: {unhandled}"
+        ))
+        return ChatResponse(
+            reply="An unexpected internal error occurred. Please try again.",
+            tool_calls=[],
+        )
+
+
+async def _run_chat_pipeline(
+    message: str,
+    player,
+    ctx: RequestContext,
+) -> ChatResponse:
+    """
+    The actual chat pipeline, extracted so that chat_endpoint can wrap it
+    in asyncio.wait_for() without nesting try/except logic.
+    """
     # ── Stage 1: Planning ────────────────────────────────────
+    ctx.set_state(RequestState.PLANNING)
     ctx.begin_stage("pipeline:planner")
     planned_result: PlannerResult
     try:
         planned_result = plan(message, player, ctx=ctx)
         ctx.end_stage()
     except Exception as e:
-        ctx.end_stage(error=str(e))
-        ctx.record_exception(e)
+        try:
+            from request_context import FailureCategory
+            category = FailureCategory.PLANNER_TIMEOUT if isinstance(e, TimeoutError) else FailureCategory.UNKNOWN_PROVIDER_EXCEPTION
+            ctx.end_stage(error=str(e), failure_category=category)
+            ctx.record_exception(e, failure_category=category)
+        except Exception:
+            ctx.end_stage(error=str(e))
+            ctx.record_exception(e)
+        ctx.set_state(RequestState.FAILED)
         ctx.finalize(status="error")
         resource_manager.update_diagnostics(ctx)
         log_message("ERROR", f"{ctx.prefix()} Planner exception: {type(e).__name__}: {e}")
@@ -709,6 +782,7 @@ async def chat_endpoint(request: ChatRequest):
 
     # ── Stage 2: Tool Execution ──────────────────────────────
     if planned_result.tool_calls:
+        ctx.set_state(RequestState.EXECUTING_TOOLS)
         ctx.begin_stage("pipeline:tool_execution")
         replies = []
         for tool_call in planned_result.tool_calls:
@@ -745,7 +819,7 @@ async def chat_endpoint(request: ChatRequest):
                 tool_exc_val = str(tool_exc)
 
             tool_duration = round((time.time() - tool_start) * 1000, 2)
-            
+
             # Record last executed tool details on request context
             ctx.last_executed_tool = tool_call.tool
             ctx.tool_execution_time_ms = tool_duration
@@ -778,6 +852,7 @@ async def chat_endpoint(request: ChatRequest):
         combined_reply = "\n".join(replies)
 
         # ── Stage 3: Response Generation ────────────────────
+        ctx.set_state(RequestState.GENERATING_RESPONSE)
         ctx.begin_stage("pipeline:response_generation")
         final_reply = generator.generate_response(
             planned_result.response_strategy,
@@ -789,17 +864,21 @@ async def chat_endpoint(request: ChatRequest):
         )
         ctx.end_stage()
 
+        ctx.set_state(RequestState.SENDING_RESPONSE)
         ctx.finalize(status="success")
         resource_manager.update_diagnostics(ctx)
-        
+
         # Log the detailed planner log block
         log_planner_debug(ctx, planned_result)
-        
+
+        ctx.set_state(RequestState.COMPLETED)
         log_message("INFO", f"{ctx.prefix()} Request complete – strategy={planned_result.response_strategy} tools={ctx.tool_calls_made} time={ctx.response_time_ms}ms")
+        log_message("INFO", ctx.get_timeline_summary())
 
         return ChatResponse(reply=final_reply, tool_calls=planned_result.tool_calls)
 
     # ── Stage 3: Conversational Response (no tools) ──────────
+    ctx.set_state(RequestState.GENERATING_RESPONSE)
     ctx.begin_stage("pipeline:response_generation")
     final_reply = generator.generate_response(
         planned_result.response_strategy,
@@ -811,19 +890,23 @@ async def chat_endpoint(request: ChatRequest):
     )
     ctx.end_stage()
 
+    ctx.set_state(RequestState.SENDING_RESPONSE)
     ctx.finalize(status="success")
     resource_manager.update_diagnostics(ctx)
-    
+
     # Direct verify: no tools were needed, so verification status is success
     if hasattr(ctx, "execution_verification") and isinstance(ctx.execution_verification, dict):
         ctx.execution_verification["verification_status"] = "success"
-        
+
     # Log the detailed planner log block
     log_planner_debug(ctx, planned_result)
-    
+
+    ctx.set_state(RequestState.COMPLETED)
     log_message("INFO", f"{ctx.prefix()} Request complete – strategy={planned_result.response_strategy} time={ctx.response_time_ms}ms")
+    log_message("INFO", ctx.get_timeline_summary())
 
     return ChatResponse(reply=final_reply, tool_calls=[])
+
 
 
 # ─────────────────────────────────────────────────────────────

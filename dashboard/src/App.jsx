@@ -1746,6 +1746,8 @@ export default function App() {
       last_output_tokens,
       last_exception,
       last_exception_type,
+      failure_category,
+      current_state,
       last_successful_request_id,
       last_provider_payload,
       stage_timings,
@@ -1755,6 +1757,111 @@ export default function App() {
       tool_output,
       tool_exception,
     } = diagnostics;
+
+    // ── Request Timeline helpers ─────────────────────────────────────────
+    const CATEGORY_COLORS = {
+      NETWORK_TIMEOUT: '#ff8c42',
+      PROVIDER_TIMEOUT: '#ff5f5f',
+      CONNECTION_FAILURE: '#c0392b',
+      RATE_LIMIT: '#f1c40f',
+      DAILY_QUOTA_EXCEEDED: '#e67e22',
+      JSON_PARSE_ERROR: '#9b59b6',
+      INVALID_PROVIDER_RESPONSE: '#8e44ad',
+      GENERATOR_TIMEOUT: '#e74c3c',
+      PLANNER_TIMEOUT: '#e74c3c',
+      TOOL_EXECUTION_ERROR: '#d35400',
+      REQUEST_BUDGET_EXCEEDED: '#c0392b',
+      UNKNOWN_PROVIDER_EXCEPTION: '#95a5a6',
+      NONE: 'var(--color-green)',
+    };
+
+    const getCategoryColor = (cat) => CATEGORY_COLORS[cat] || '#95a5a6';
+
+    const renderTimeline = () => {
+      if (!last_request_id || !stage_timings || stage_timings.length === 0) return null;
+      const total = stage_timings.reduce((s, t) => s + t.elapsed_ms, 0) || 1;
+      return (
+        <div className="card">
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '4px' }}>
+            <h3 className="card-title" style={{ margin: 0 }}>⏱ Request Timeline</h3>
+            <span style={{
+              fontSize: '11px', fontFamily: 'monospace', color: '#666',
+              background: '#111', border: '1px solid #222', padding: '2px 8px', borderRadius: '4px'
+            }}>
+              REQ:{last_request_id}
+            </span>
+          </div>
+          <p style={{ fontSize: '12px', color: '#555', margin: '4px 0 20px', fontStyle: 'italic' }}>
+            End-to-end breakdown of every pipeline stage for this request.
+          </p>
+
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+            {stage_timings.map((stage, idx) => {
+              const pct = Math.max(2, (stage.elapsed_ms / total) * 100);
+              const ok = stage.success !== false && !stage.error;
+              const barColor = ok ? 'var(--color-green)' : getCategoryColor(stage.failure_category);
+              return (
+                <div key={idx} style={{ display: 'flex', flexDirection: 'column', gap: '3px' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '13px' }}>
+                    <span style={{ fontFamily: 'monospace', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                      <span style={{ color: ok ? 'var(--color-green)' : '#ff5555', fontWeight: 'bold', fontSize: '15px' }}>
+                        {ok ? '✓' : '✗'}
+                      </span>
+                      <span style={{ color: '#ccc' }}>{stage.stage}</span>
+                    </span>
+                    <span style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                      {stage.failure_category && stage.failure_category !== 'NONE' && !ok && (
+                        <span style={{
+                          fontSize: '10px', padding: '2px 6px', borderRadius: '4px',
+                          backgroundColor: getCategoryColor(stage.failure_category) + '22',
+                          border: `1px solid ${getCategoryColor(stage.failure_category)}`,
+                          color: getCategoryColor(stage.failure_category),
+                          fontFamily: 'monospace',
+                        }}>
+                          {stage.failure_category}
+                        </span>
+                      )}
+                      <span style={{ color: ok ? '#888' : '#ff8888', fontFamily: 'monospace' }}>
+                        {stage.elapsed_ms} ms
+                      </span>
+                    </span>
+                  </div>
+                  <div style={{ height: '6px', backgroundColor: '#1a1a1a', borderRadius: '3px', overflow: 'hidden' }}>
+                    <div style={{
+                      height: '100%',
+                      width: `${pct}%`,
+                      backgroundColor: barColor,
+                      borderRadius: '3px',
+                      transition: 'width 0.4s ease',
+                      opacity: ok ? 1 : 0.75,
+                    }} />
+                  </div>
+                  {stage.error && (
+                    <span style={{ fontSize: '11px', color: '#ff8888', fontFamily: 'monospace', paddingLeft: '22px' }}>
+                      ↳ {stage.error.slice(0, 120)}{stage.error.length > 120 ? '…' : ''}
+                    </span>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+
+          {/* Total row */}
+          <div style={{
+            marginTop: '16px', paddingTop: '12px', borderTop: '1px solid #222',
+            display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+          }}>
+            <span style={{ fontFamily: 'monospace', fontSize: '13px', color: '#888' }}>
+              • TOTAL
+            </span>
+            <span style={{ fontFamily: 'monospace', fontSize: '14px', fontWeight: 'bold', color: 'var(--color-green)' }}>
+              {last_response_time_ms} ms
+            </span>
+          </div>
+        </div>
+      );
+    };
+
 
     return (
       <div style={{ display: 'flex', flexDirection: 'column', gap: '24px', paddingBottom: '40px' }}>
@@ -1830,10 +1937,21 @@ export default function App() {
               </div>
               <div style={{ backgroundColor: '#111', padding: '12px', borderRadius: '6px', border: '1px solid #222' }}>
                 <div style={{ fontSize: '12px', color: '#888', marginBottom: '4px' }}>Status</div>
-                <div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
                   <span className={`badge ${last_response_status === 'success' ? 'success' : 'danger'}`} style={{ fontSize: '12px', padding: '4px 8px' }}>
                     {last_response_status.toUpperCase()}
                   </span>
+                  {current_state && (
+                    <span style={{
+                      fontSize: '10px', fontFamily: 'monospace', padding: '2px 6px',
+                      borderRadius: '3px', width: 'fit-content',
+                      backgroundColor: current_state === 'COMPLETED' ? '#0a1f0a' : current_state === 'FAILED' ? '#1f0a0a' : '#0d1117',
+                      border: `1px solid ${current_state === 'COMPLETED' ? 'var(--color-green)' : current_state === 'FAILED' ? '#ff5555' : '#444'}`,
+                      color: current_state === 'COMPLETED' ? 'var(--color-green)' : current_state === 'FAILED' ? '#ff5555' : '#888',
+                    }}>
+                      {current_state}
+                    </span>
+                  )}
                 </div>
               </div>
               <div style={{ backgroundColor: '#111', padding: '12px', borderRadius: '6px', border: '1px solid #222' }}>
@@ -1851,7 +1969,72 @@ export default function App() {
           )}
         </div>
 
-        {/* Row 3: Tool Execution Audit Details */}
+        {/* Row 2b: Request Lifecycle State Tracker */}
+        {last_request_id && (
+          <div className="card">
+            <h3 className="card-title">🔄 Request Lifecycle State</h3>
+            <p style={{ fontSize: '12px', color: '#555', margin: '4px 0 20px', fontStyle: 'italic' }}>
+              Shows the last recorded lifecycle state for this request.
+            </p>
+            {(() => {
+              const STATES = ['QUEUED', 'PLANNING', 'EXECUTING_TOOLS', 'GENERATING_RESPONSE', 'SENDING_RESPONSE', 'COMPLETED'];
+              const isFailed = current_state === 'FAILED';
+              const activeIdx = isFailed ? -1 : STATES.indexOf(current_state);
+              return (
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0', flexWrap: 'wrap', rowGap: '12px' }}>
+                  {STATES.map((state, idx) => {
+                    const isDone = !isFailed && idx < activeIdx;
+                    const isActive = !isFailed && idx === activeIdx;
+                    return (
+                      <div key={state} style={{ display: 'flex', alignItems: 'center' }}>
+                        <div style={{
+                          padding: '6px 14px',
+                          borderRadius: '20px',
+                          fontSize: '11px',
+                          fontFamily: 'monospace',
+                          fontWeight: isActive ? 'bold' : 'normal',
+                          border: `1px solid ${
+                            isActive ? 'var(--color-green)'
+                            : isDone ? '#2a4a2a'
+                            : '#2a2a2a'
+                          }`,
+                          backgroundColor: isActive ? '#0a2a0a' : isDone ? '#111a11' : '#0d0d0d',
+                          color: isActive ? 'var(--color-green)' : isDone ? '#3a7a3a' : '#444',
+                          boxShadow: isActive ? '0 0 8px rgba(0,200,100,0.2)' : 'none',
+                          transition: 'all 0.3s ease',
+                          whiteSpace: 'nowrap',
+                        }}>
+                          {isDone ? '✓ ' : isActive ? '▶ ' : ''}{state}
+                        </div>
+                        {idx < STATES.length - 1 && (
+                          <div style={{
+                            width: '24px', height: '1px',
+                            backgroundColor: isDone ? '#2a4a2a' : '#222',
+                            margin: '0 2px',
+                          }} />
+                        )}
+                      </div>
+                    );
+                  })}
+                  {isFailed && (
+                    <>
+                      <div style={{
+                        padding: '6px 14px', borderRadius: '20px',
+                        fontSize: '11px', fontFamily: 'monospace', fontWeight: 'bold',
+                        border: '1px solid #c0392b', backgroundColor: '#1a0808',
+                        color: '#ff5555', boxShadow: '0 0 8px rgba(200,0,0,0.2)',
+                        whiteSpace: 'nowrap',
+                      }}>
+                        ✗ FAILED
+                      </div>
+                    </>
+                  )}
+                </div>
+              );
+            })()}
+          </div>
+        )}
+
         <div className="card">
           <h3 className="card-title">🛠️ Tool Execution Audit</h3>
           {!last_executed_tool ? (
@@ -1896,37 +2079,22 @@ export default function App() {
           )}
         </div>
 
-        {/* Row 4: Pipeline Stage Timings */}
-        {last_request_id && stage_timings && stage_timings.length > 0 && (
-          <div className="card">
-            <h3 className="card-title">⏱️ Pipeline Stage Timings</h3>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '14px', marginTop: '20px' }}>
-              {stage_timings.map((stage, idx) => {
-                const totalDuration = stage_timings.reduce((sum, t) => sum + t.elapsed_ms, 0);
-                const percentage = totalDuration > 0 ? (stage.elapsed_ms / totalDuration) * 100 : 0;
-                return (
-                  <div key={idx} style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '13px' }}>
-                      <span style={{ fontWeight: 'bold', fontFamily: 'monospace', color: '#ccc' }}>{stage.stage}</span>
-                      <span style={{ color: stage.error ? '#ff5555' : '#888' }}>
-                        {stage.elapsed_ms} ms {stage.error && '(Failed)'}
-                      </span>
-                    </div>
-                    <div style={{ height: '8px', backgroundColor: '#222', borderRadius: '4px', overflow: 'hidden' }}>
-                      <div style={{ 
-                        height: '100%', 
-                        width: `${percentage}%`, 
-                        backgroundColor: stage.error ? '#ff5555' : 'var(--color-green)',
-                        borderRadius: '4px',
-                        transition: 'width 0.5s ease-in-out'
-                      }} />
-                    </div>
-                    {stage.error && (
-                      <span style={{ fontSize: '11px', color: '#ff8888', fontFamily: 'monospace' }}>Error: {stage.error}</span>
-                    )}
-                  </div>
-                );
-              })}
+        {/* Row 4: Request Timeline */}
+        {renderTimeline()}
+
+        {/* Row 4b: Failure Category Banner (shown only on failed requests) */}
+        {failure_category && failure_category !== 'NONE' && last_response_status !== 'success' && (
+          <div className="card" style={{ backgroundColor: '#1a0808', border: `1px solid ${getCategoryColor(failure_category)}55` }}>
+            <h3 className="card-title" style={{ color: getCategoryColor(failure_category) }}>⚠ Failure Classification</h3>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginTop: '16px' }}>
+              <span style={{
+                fontSize: '13px', fontFamily: 'monospace', padding: '6px 12px', borderRadius: '6px',
+                backgroundColor: getCategoryColor(failure_category) + '22',
+                border: `1px solid ${getCategoryColor(failure_category)}`,
+                color: getCategoryColor(failure_category),
+                fontWeight: 'bold',
+              }}>{failure_category}</span>
+              <span style={{ color: '#888', fontSize: '13px' }}>This is the backend’s structured failure type for the last request.</span>
             </div>
           </div>
         )}
