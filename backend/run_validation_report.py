@@ -5,6 +5,9 @@ from unittest.mock import patch
 
 # Setup import paths
 sys.path.append(os.path.abspath(os.path.dirname(__file__)))
+workspace_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if workspace_root not in sys.path:
+    sys.path.insert(0, workspace_root)
 
 from intent_classifier import IntentClassifier
 from planner import plan, ResponseStrategy
