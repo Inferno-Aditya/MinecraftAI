@@ -8,7 +8,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 from dotenv import load_dotenv
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 
 try:
     from context import PlayerContext
@@ -44,6 +44,15 @@ try:
     from memory import load_memory, save_memory
 except ImportError:
     from .memory import load_memory, save_memory
+
+try:
+    from memory.event_logger import EventLogger
+    from memory.timeline import query_events, get_sessions
+    from memory.memory_manager import MemoryManager
+except ImportError:
+    from .memory.event_logger import EventLogger
+    from .memory.timeline import query_events, get_sessions
+    from .memory.memory_manager import MemoryManager
 
 try:
     from personality import load_personality, save_personality, restore_default_personality, get_personality_meta
@@ -397,6 +406,336 @@ def update_personality(data: PersonalityUpdate):
 def reset_personality_route():
     content = restore_default_personality()
     return {"status": "success", "content": content}
+
+# ── Timeline & Event Logging Models & Endpoints ────────────────
+
+class EventLogRequest(BaseModel):
+    event_type: str
+    subtype: str
+    dimension: str
+    x: float
+    y: float
+    z: float
+    data: Dict[str, Any] = {}
+    timestamp: str = None
+    source: str = "PLAYER"
+    importance: int = None
+    batch_key: str = None
+    parent_event_uuid: str = None
+    parent_session_uuid: str = None
+
+class BatchStartRequest(BaseModel):
+    batch_key: str
+    event_type: str
+    subtype: str
+    dimension: str
+    x: float
+    y: float
+    z: float
+    initial_data: Dict[str, Any] = {}
+    source: str = "PLAYER"
+    importance: int = None
+    parent_event_uuid: str = None
+    parent_session_uuid: str = None
+
+class BatchEndRequest(BaseModel):
+    batch_key: str
+
+@app.post("/api/memory/timeline/event")
+def log_timeline_event(req: EventLogRequest):
+    try:
+        uuid_val = EventLogger.get_instance().log_event(
+            event_type=req.event_type,
+            subtype=req.subtype,
+            dimension=req.dimension,
+            x=req.x,
+            y=req.y,
+            z=req.z,
+            data=req.data,
+            timestamp=req.timestamp,
+            source=req.source,
+            importance=req.importance,
+            batch_key=req.batch_key,
+            parent_event_uuid=req.parent_event_uuid,
+            parent_session_uuid=req.parent_session_uuid
+        )
+        return {"status": "success", "event_uuid": uuid_val}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/memory/timeline/batch/start")
+def start_timeline_batch(req: BatchStartRequest):
+    try:
+        EventLogger.get_instance().start_batch(
+            batch_key=req.batch_key,
+            event_type=req.event_type,
+            subtype=req.subtype,
+            dimension=req.dimension,
+            x=req.x,
+            y=req.y,
+            z=req.z,
+            initial_data=req.initial_data,
+            source=req.source,
+            importance=req.importance,
+            parent_event_uuid=req.parent_event_uuid,
+            parent_session_uuid=req.parent_session_uuid
+        )
+        return {"status": "success"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/memory/timeline/batch/end")
+def end_timeline_batch(req: BatchEndRequest):
+    try:
+        uuid_val = EventLogger.get_instance().end_batch(req.batch_key)
+        if uuid_val:
+            return {"status": "success", "event_uuid": uuid_val}
+        else:
+            return {"status": "not_found", "detail": f"Batch key {req.batch_key} not active"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/memory/timeline/flush")
+def flush_timeline():
+    try:
+        EventLogger.get_instance().flush()
+        return {"status": "success"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/memory/timeline/db-path")
+def get_timeline_db_path():
+    return {"db_path": EventLogger.get_instance().db_path}
+
+@app.get("/api/memory/timeline/events")
+def get_timeline_events(
+    session_id: str = None,
+    event_type: str = None,
+    subtype: str = None,
+    dimension: str = None,
+    min_importance: int = None,
+    source: str = None,
+    parent_event_uuid: str = None,
+    parent_session_uuid: str = None,
+    start_time: str = None,
+    end_time: str = None,
+    sort: str = "desc",
+    limit: int = 100,
+    offset: int = 0
+):
+    try:
+        db_path = EventLogger.get_instance().db_path
+        events = query_events(
+            db_path=db_path,
+            session_id=session_id,
+            event_type=event_type,
+            subtype=subtype,
+            dimension=dimension,
+            min_importance=min_importance,
+            source=source,
+            parent_event_uuid=parent_event_uuid,
+            parent_session_uuid=parent_session_uuid,
+            start_time=start_time,
+            end_time=end_time,
+            sort=sort,
+            limit=limit,
+            offset=offset
+        )
+        return {"status": "success", "events": events}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/memory/timeline/sessions")
+def get_timeline_sessions(limit: int = 100, offset: int = 0):
+    try:
+        db_path = EventLogger.get_instance().db_path
+        sessions = get_sessions(db_path=db_path, limit=limit, offset=offset)
+        return {"status": "success", "sessions": sessions}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# ── Processed Memory Endpoints ────────────────
+
+@app.get("/api/memory/sessions")
+def get_processed_sessions(limit: int = 100, offset: int = 0):
+    try:
+        sessions = MemoryManager.get_instance().list_sessions(limit=limit, offset=offset)
+        return {"status": "success", "sessions": sessions}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/memory/daily")
+def get_processed_daily(limit: int = 100, offset: int = 0):
+    try:
+        daily = MemoryManager.get_instance().list_daily_memories(limit=limit, offset=offset)
+        return {"status": "success", "daily_memories": daily}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/memory/facts")
+def get_processed_facts(limit: int = 100, offset: int = 0):
+    try:
+        facts = MemoryManager.get_instance().list_facts(limit=limit, offset=offset)
+        return {"status": "success", "facts": facts}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/memory/episodes")
+def get_processed_episodes(limit: int = 100, offset: int = 0, episode_type: str = None, session_id: str = None):
+    try:
+        episodes = MemoryManager.get_instance().list_episodes(limit=limit, offset=offset, episode_type=episode_type, session_id=session_id)
+        return {"status": "success", "episodes": episodes}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/memory/process")
+def trigger_memory_pipeline():
+    try:
+        count = MemoryManager.get_instance().trigger_processing()
+        return {"status": "success", "processed_events": count}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# ── Semantic Search / Index Endpoints ──────────
+
+@app.get("/api/memory/search")
+def search_memories(query: str, top_k: int = 5):
+    try:
+        results = MemoryManager.get_instance().search_memories(query=query, top_k=top_k)
+        return {"status": "success", "results": results}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/memory/search/type")
+def search_memories_by_type(query: str, memory_type: str, top_k: int = 5):
+    try:
+        results = MemoryManager.get_instance().search_memories_by_type(query=query, memory_type=memory_type, top_k=top_k)
+        return {"status": "success", "results": results}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/memory/index/rebuild")
+def rebuild_memory_index():
+    try:
+        inserted, updated, deleted = MemoryManager.get_instance().rebuild_vector_index()
+        return {
+            "status": "success",
+            "inserted": inserted,
+            "updated": updated,
+            "deleted": deleted
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/memory/index/stats")
+def get_memory_index_stats():
+    try:
+        stats = MemoryManager.get_instance().get_index_statistics()
+        return {"status": "success", "stats": stats}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+class PromptPreviewRequest(BaseModel):
+    message: str
+    player_context: Dict[str, Any]
+    tool_results: Optional[str] = ""
+    response_strategy: Optional[str] = "PLANNER"
+    profile: Optional[str] = "Standard"
+    req_memory: Optional[bool] = True
+    max_budget: Optional[int] = 8192
+
+class MockPlayerContext:
+    def __init__(self, data: dict):
+        self.name = data.get("name", "Steve")
+        self.x = float(data.get("x", 0.0))
+        self.y = float(data.get("y", 64.0))
+        self.z = float(data.get("z", 0.0))
+        self.dimension = data.get("dimension", "overworld")
+        self.gamemode = data.get("gamemode", "survival")
+        self.health = float(data.get("health", 20.0))
+        self.food = float(data.get("food", 20.0))
+        self.biome = data.get("biome", "plains")
+        self.world_time = int(data.get("world_time", 1000))
+        self.yaw = float(data.get("yaw", 0.0))
+        self.pitch = float(data.get("pitch", 0.0))
+        
+        class MockEnv:
+            def __init__(self, env_data: dict):
+                self.nearby_entities = env_data.get("nearby_entities", [])
+                self.nearby_blocks = env_data.get("nearby_blocks", [])
+                self.weather = env_data.get("weather", "clear")
+        
+        self.environment = MockEnv(data.get("environment", {}))
+        self.inventory = data.get("inventory", {})
+        self.equipment = data.get("equipment", {})
+
+@app.post("/api/ai/prompt/preview")
+def preview_prompt(req: PromptPreviewRequest):
+    try:
+        from backend.ai.prompt_builder import PromptBuilder
+        mock_ctx = MockPlayerContext(req.player_context)
+        
+        system_instructions = (
+            "You are both a Minecraft expert and a planning engine for an AI Minecraft assistant."
+            if req.response_strategy.upper() == "PLANNER"
+            else "You are both a Minecraft expert and a response synthesizer for an AI Minecraft assistant."
+        )
+        
+        tool_defs = ""
+        if req.response_strategy.upper() == "PLANNER":
+            from backend.tool_selector import select_tool_definitions
+            from backend.tools.registry import registry
+            tool_defs = select_tool_definitions(list(registry.list_tools()))
+            
+        from backend.context_builder import build_context
+        req_context = ["player_context", "environment_snapshot"]
+        live_context_text = build_context(mock_ctx, req_context)
+        
+        system_prompt, user_prompt, diagnostics = PromptBuilder.build_prompt_with_budget(
+            message=req.message,
+            player_context=mock_ctx,
+            live_context_text=live_context_text,
+            tool_results=req.tool_results,
+            system_instructions=system_instructions,
+            tool_definitions=tool_defs,
+            req_memory=req.req_memory,
+            profile=req.profile,
+            max_budget=req.max_budget
+        )
+        
+        return {
+            "status": "success",
+            "system_prompt": system_prompt,
+            "user_prompt": user_prompt,
+            "diagnostics": diagnostics
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/ai/prompt/debug")
+def get_prompt_debug_info():
+    try:
+        from backend.ai.prompt_builder import get_last_debug_info
+        info = get_last_debug_info()
+        return {"status": "success", "diagnostics": info}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.on_event("startup")
+def startup_event():
+    try:
+        EventLogger.get_instance().initialize()
+        MemoryManager.get_instance().initialize()
+    except Exception as e:
+        print(f"Failed to initialize memory logger/manager: {e}")
+
+@app.on_event("shutdown")
+def shutdown_event():
+    try:
+        EventLogger.get_instance().close()
+        MemoryManager.get_instance().close()
+    except Exception as e:
+        print(f"Failed to close memory logger/manager: {e}")
 
 @app.get("/api/memory")
 def get_all_memory():

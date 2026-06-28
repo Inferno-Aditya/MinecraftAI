@@ -251,7 +251,7 @@ def run_validation():
     regression_pass_rate = (sum(1 for r in results if all(s == "PASS" for s in r["stages"].values())) / total) * 100
 
     # Write report
-    report_path = "C:/Users/adity/.gemini/antigravity/brain/4a795dfb-2eb6-479f-b2ca-ccd7930cb41e/validation_report.md"
+    report_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "docs", "validation_report.md")
     os.makedirs(os.path.dirname(report_path), exist_ok=True)
     
     with open(report_path, "w", encoding="utf-8") as f:

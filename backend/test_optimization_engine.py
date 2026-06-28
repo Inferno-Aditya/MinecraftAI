@@ -168,7 +168,6 @@ class TestOptimizationEngine(unittest.TestCase):
         res = plan("How do critical hits work?", self.player_context)
         self.assertEqual(res.response_strategy, ResponseStrategy.KNOWLEDGE)
         
-        # Retrieve stats to check that savings are reported and saved
         stats = resource_manager.get_stats()
         self.assertIn("average_prompt_size", stats)
         self.assertIn("average_tokens_saved", stats)

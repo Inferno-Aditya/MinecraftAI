@@ -119,7 +119,7 @@ class TestPhase3(unittest.TestCase):
         with patch("os.path.exists", return_value=False):
             config = load_config()
             self.assertEqual(config["provider"], "gemini")
-            self.assertEqual(config["model"], "gemini-2.5-flash")
+            self.assertEqual(config["model"], "gemini-3.1-flash-lite")
 
     def test_memory_summary_formatting(self):
         """Verify that get_memory_summary constructs a concise formatted text representation."""

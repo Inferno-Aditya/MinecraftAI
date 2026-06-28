@@ -55,6 +55,9 @@ class MockProvider(BaseLLMProvider):
             if line.startswith("User Message:"):
                 message = line.replace("User Message:", "").strip()
                 break
+            elif line.startswith("Player Question:"):
+                message = line.replace("Player Question:", "").strip()
+                break
 
         msg = message.strip()
         

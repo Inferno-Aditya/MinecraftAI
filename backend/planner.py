@@ -566,42 +566,32 @@ def plan(message: str, player_context: PlayerContext, ctx=None) -> PlannerResult
 
     if ctx:
         ctx.begin_stage("planner:build_prompt")
-    system_prompt, user_prompt = PromptBuilder.build_planner_prompt(
-        system_instructions, context_text, memory_text, tool_defs, message
-    )
-    if ctx:
-        ctx.planner_system_prompt = system_prompt
-        ctx.planner_user_prompt = user_prompt
-
-    # Step F: Generate Prompt Profile
-    prompt_profile = PromptProfile.calculate(
-        system_instructions=system_instructions,
-        context_text=context_text,
-        memory_text=memory_text,
-        tool_defs=tool_defs,
-        user_message=message,
-        actual_system_prompt=system_prompt,
-        actual_user_prompt=user_prompt,
-        baseline_tokens=baseline_tokens
-    )
+    
+    # Calculate baseline tokens
+    baseline_system = build_system_prompt()
+    baseline_user = build_user_prompt(message, player_context)
+    from resource_manager import estimate_tokens
+    baseline_tokens = estimate_tokens(baseline_system) + estimate_tokens(baseline_user)
+    
     if ctx:
         ctx.end_stage()
-    
-    if config.get("enable_prompt_logging", True):
-        log_prompt_debug(system_prompt, user_prompt)
-
-    log_message("INFO", f"{req_id} Planning via provider='{provider_name}' model='{model_name}' intent={intent} elapsed={round(ctx.elapsed_seconds() * 1000) if ctx else 0}ms")
-
-    if ctx:
         ctx.begin_stage("planner:llm_call")
+    
     try:
-        response_text = execute_llm_request_with_rate_limits(
-            provider_name, model_name, system_prompt, user_prompt,
-            request_type="plan", prompt_profile=prompt_profile,
-            model_profile=model_profile, ctx=ctx
+        response_text = PromptBuilder.generate_planner_response(
+            message=message,
+            player_context=player_context,
+            req_context=req_context,
+            req_memory=req_memory,
+            req_tools=req_tools,
+            system_instructions=system_instructions,
+            tool_definitions=tool_defs,
+            ctx=ctx,
+            execute_llm_request_func=execute_llm_request_with_rate_limits,
+            baseline_tokens=baseline_tokens
         )
         if ctx:
-            ctx.planner_raw_response = response_text
+            ctx.end_stage()
     except Exception as e:
         if ctx:
             ctx.end_stage(error=str(e))
@@ -614,8 +604,6 @@ def plan(message: str, player_context: PlayerContext, ctx=None) -> PlannerResult
         )
         validate_and_reason_decision(result, intent, classification, ctx, message, "Fallback")
         return result
-    if ctx:
-        ctx.end_stage()
 
     # Clean markdown block markers if any
     def clean_markdown_json(text: str) -> str:
@@ -647,6 +635,10 @@ def plan(message: str, player_context: PlayerContext, ctx=None) -> PlannerResult
         if ctx:
             ctx.end_stage(error=str(parse_err))
         log_message("WARNING", f"{req_id} Initial LLM response parsing/validation failed: {str(parse_err)}")
+
+        # Retrieve system prompt from PromptBuilder cache for the retry
+        from backend.ai.prompt_builder import PromptBuilder
+        system_prompt = PromptBuilder.get_last_debug_info().get("system_prompt", "")
 
         # Retry exactly once with correction prompt – only if we still have time budget
         correction_user_prompt = (
@@ -683,7 +675,7 @@ def plan(message: str, player_context: PlayerContext, ctx=None) -> PlannerResult
         try:
             retry_response = execute_llm_request_with_rate_limits(
                 provider_name, model_name, system_prompt, correction_user_prompt,
-                request_type="plan", prompt_profile=prompt_profile,
+                request_type="plan", prompt_profile=None,
                 model_profile=model_profile, ctx=ctx
             )
             if ctx:

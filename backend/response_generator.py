@@ -190,85 +190,11 @@ class ResponseGenerator:
                 f"Tool Execution Results:\n{tool_results}\n\n"
                 "Based on the player's question, their status/context, and the tool results, provide your expert Minecraft advice/answer."
             )
-            baseline_tokens = estimate_tokens(system_instructions) + estimate_tokens(baseline_user_prompt)
-
-            system_prompt, user_prompt = PromptBuilder.build_synthesis_prompt(
-                system_instructions, context_text, memory_text, message, tool_results
-            )
-            if ctx:
-                ctx.generator_system_prompt = system_prompt
-                ctx.generator_user_prompt = user_prompt
-
-            # Execution Verification check for Prompt builder/section generation/provider payload
-            if ctx and hasattr(ctx, "execution_verification") and isinstance(ctx.execution_verification, dict):
-                ctx.execution_verification["accepted_by_prompt_builder"] = True
-                
-                section_text = f"Tool Execution Results:\n{tool_results}"
-                has_section = section_text in user_prompt
-                ctx.execution_verification["prompt_section_generated"] = has_section
-                ctx.execution_verification["provider_received_section"] = has_section
-                
-                # Check if any errors occurred during tool execution
-                tool_exec_success = all(ctx.execution_verification["tool_execution_success"].values()) if ctx.execution_verification["tool_execution_success"] else False
-                tool_result_valid = all(ctx.execution_verification["valid_tool_result"].values()) if ctx.execution_verification["valid_tool_result"] else False
-                
-                if not tool_exec_success:
-                    ctx.execution_verification["verification_status"] = "failed"
-                    failed_tools = [t for t, succ in ctx.execution_verification["tool_execution_success"].items() if not succ]
-                    ctx.execution_verification["failure_reason"] = f"Tool(s) failed execution: {', '.join(failed_tools)}"
-                elif not tool_result_valid:
-                    ctx.execution_verification["verification_status"] = "failed"
-                    invalid_tools = [t for t, valid in ctx.execution_verification["valid_tool_result"].items() if not valid]
-                    ctx.execution_verification["failure_reason"] = f"Tool(s) returned invalid ToolResult: {', '.join(invalid_tools)}"
-                elif not has_section:
-                    ctx.execution_verification["verification_status"] = "failed"
-                    ctx.execution_verification["failure_reason"] = "Prompt Builder did not generate the Tool Results section."
-                else:
-                    ctx.execution_verification["verification_status"] = "success"
-                
-                # Also mark Tool Results as injected in the Prompt Injection Summary
-                if hasattr(ctx, "prompt_sections_injected") and isinstance(ctx.prompt_sections_injected, dict):
-                    ctx.prompt_sections_injected["Tool Results"] = True
-
-            prompt_profile = PromptProfile.calculate(
-                system_instructions=system_instructions,
-                context_text=context_text + "\n\nTool Execution Results:\n" + tool_results,
-                memory_text=memory_text,
-                tool_defs="",
-                user_message=message,
-                actual_system_prompt=system_prompt,
-                actual_user_prompt=user_prompt,
-                baseline_tokens=baseline_tokens
-            )
-            if ctx:
-                ctx.end_stage()
-
-            # Optional prompt logging
-            config = load_config()
-            if config.get("enable_prompt_logging", True):
-                try:
-                    base_dir = os.path.dirname(os.path.dirname(__file__))
-                    prompts_dir = os.path.join(base_dir, "logs", "prompts")
-                    os.makedirs(prompts_dir, exist_ok=True)
-                    timestamp = time.strftime("%Y-%m-%d_%H-%M-%S")
-                    filepath = os.path.join(prompts_dir, f"synthesis_{timestamp}.txt")
-                    content = (
-                        f"=== REQUEST ID: {ctx.request_id if ctx else 'N/A'} ===\n"
-                        f"=== SYSTEM PROMPT ===\n{system_prompt}\n\n"
-                        f"=== USER PROMPT ===\n{user_prompt}\n"
-                    )
-                    with open(filepath, "w", encoding="utf-8") as f:
-                        f.write(content)
-                except Exception:
-                    pass
-
-            # Stage E: LLM Call – time-budget guarded
+            # Build synthesis prompt & execute via PromptBuilder gateway
             if ctx:
                 ctx.begin_stage("generator:llm_call")
 
-            # Time-budget guard: if the request is already close to its overall
-            # deadline, skip the second LLM call and return the tool results directly
-            # rather than adding another 20-35s and triggering a client timeout.
+            # Time-budget guard
             elapsed_s = ctx.elapsed_seconds() if ctx else 0.0
             if elapsed_s > 38.0:
                 if ctx:
@@ -293,16 +219,73 @@ class ResponseGenerator:
                 )
 
             try:
-                response_text = execute_llm_request_with_rate_limits(
-                    self.provider_name, self.model_name,
-                    system_prompt, user_prompt,
-                    request_type="synthesis",
-                    prompt_profile=prompt_profile,
-                    model_profile=self.model_profile,
-                    ctx=ctx
+                response_text = PromptBuilder.generate_synthesis_response(
+                    message=message,
+                    player_context=player_context,
+                    req_context=req_context,
+                    req_memory=req_memory,
+                    tool_results=tool_results,
+                    system_instructions=system_instructions,
+                    ctx=ctx,
+                    execute_llm_request_func=execute_llm_request_with_rate_limits
                 )
+                
+                # Fetch built prompts for logging and verification
+                debug_info = PromptBuilder.get_last_debug_info()
+                system_prompt = debug_info["system_prompt"]
+                user_prompt = debug_info["user_prompt"]
+                
                 if ctx:
+                    ctx.generator_system_prompt = system_prompt
+                    ctx.generator_user_prompt = user_prompt
                     ctx.generator_raw_response = response_text
+                    
+                # Execution Verification checks
+                if ctx and hasattr(ctx, "execution_verification") and isinstance(ctx.execution_verification, dict):
+                    has_section = "Tool Execution Results" in user_prompt
+                    ctx.execution_verification["prompt_section_generated"] = has_section
+                    ctx.execution_verification["provider_received_section"] = has_section
+                    ctx.execution_verification["accepted_by_prompt_builder"] = True
+                    
+                    tool_exec_success = all(ctx.execution_verification["tool_execution_success"].values()) if ctx.execution_verification["tool_execution_success"] else False
+                    tool_result_valid = all(ctx.execution_verification["valid_tool_result"].values()) if ctx.execution_verification["valid_tool_result"] else False
+                    
+                    if not tool_exec_success:
+                        ctx.execution_verification["verification_status"] = "failed"
+                        failed_tools = [t for t, succ in ctx.execution_verification["tool_execution_success"].items() if not succ]
+                        ctx.execution_verification["failure_reason"] = f"Tool(s) failed execution: {', '.join(failed_tools)}"
+                    elif not tool_result_valid:
+                        ctx.execution_verification["verification_status"] = "failed"
+                        invalid_tools = [t for t, valid in ctx.execution_verification["valid_tool_result"].items() if not valid]
+                        ctx.execution_verification["failure_reason"] = f"Tool(s) returned invalid ToolResult: {', '.join(invalid_tools)}"
+                    elif not has_section:
+                        ctx.execution_verification["verification_status"] = "failed"
+                        ctx.execution_verification["failure_reason"] = "Prompt Builder did not generate the Tool Results section."
+                    else:
+                        ctx.execution_verification["verification_status"] = "success"
+                        
+                    if hasattr(ctx, "prompt_sections_injected") and isinstance(ctx.prompt_sections_injected, dict):
+                        ctx.prompt_sections_injected["Tool Results"] = True
+
+                # Optional prompt logging
+                config = load_config()
+                if config.get("enable_prompt_logging", True):
+                    try:
+                        base_dir = os.path.dirname(os.path.dirname(__file__))
+                        prompts_dir = os.path.join(base_dir, "logs", "prompts")
+                        os.makedirs(prompts_dir, exist_ok=True)
+                        timestamp = time.strftime("%Y-%m-%d_%H-%M-%S")
+                        filepath = os.path.join(prompts_dir, f"synthesis_{timestamp}.txt")
+                        content = (
+                            f"=== REQUEST ID: {ctx.request_id if ctx else 'N/A'} ===\n"
+                            f"=== SYSTEM PROMPT ===\n{system_prompt}\n\n"
+                            f"=== USER PROMPT ===\n{user_prompt}\n"
+                        )
+                        with open(filepath, "w", encoding="utf-8") as f:
+                            f.write(content)
+                    except Exception:
+                        pass
+
                 if ctx:
                     ctx.end_stage()
             except Exception as llm_err:
