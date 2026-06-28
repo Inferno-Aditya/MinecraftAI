@@ -9,7 +9,7 @@
 ![Java](https://img.shields.io/badge/Java-21-orange?logo=openjdk)
 ![Python](https://img.shields.io/badge/Python-3.10%2B-blue?logo=python)
 ![FastAPI](https://img.shields.io/badge/FastAPI-0.100%2B-teal?logo=fastapi)
-![Gemini](https://img.shields.io/badge/Gemini-3.5--flash-purple?logo=google)
+![Gemini](https://img.shields.io/badge/Gemini-3.1--flash--lite-purple?logo=google)
 ![Version](https://img.shields.io/badge/Version-v0.4.8-blue?logo=github)
 ![License](https://img.shields.io/badge/License-MIT-yellow)
 
@@ -448,7 +448,7 @@ minecraft/
 | **Web Framework** | FastAPI | >= 0.100.0 |
 | **ASGI Server** | Uvicorn | >= 0.22.0 |
 | **Data Validation** | Pydantic | >= 2.0.0 |
-| **LLM (default)** | Google Gemini | Gemini 3.5 Flash |
+| **LLM (default)** | Google Gemini | Gemini 3.1 Flash-Lite |
 | **Gemini SDK** | google-generativeai | >= 0.3.0 |
 | **Env config** | python-dotenv | >= 1.0.0 |
 | **HTTP (mod side)** | Java `java.net.http.HttpClient` | JDK 21 built-in |
@@ -520,7 +520,7 @@ GEMINI_API_KEY=your_actual_api_key_here
 ```json
 {
     "provider": "gemini",
-    "model": "gemini-2.5-flash"
+    "model": "gemini-3.1-flash-lite"
 }
 ```
 
@@ -607,7 +607,7 @@ Runtime configuration for the backend. Loaded on every request; no server restar
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `provider` | `string` | `"gemini"` | LLM provider to use. Currently supports `"gemini"` or `"mock"`. |
-| `model` | `string` | `"gemini-2.5-flash"` | Model name passed to the provider. For Gemini: any valid Gemini model ID. |
+| `model` | `string` | `"gemini-3.1-flash-lite"` | Model name passed to the provider. For Gemini: any valid Gemini model ID. |
 | `enable_prompt_logging` | `boolean` | `true` | If `true`, each LLM call writes a `logs/prompts/<timestamp>.txt` debug file. |
 
 **Example — switch to mock provider for local testing:**
@@ -913,7 +913,7 @@ python -m unittest discover -s .
 A unified append-only log written by both the Fabric mod (Java) and the FastAPI backend (Python) using the same format:
 
 ```
-[2026-06-26 18:52:02] [INFO] Planning via provider 'gemini' using model 'gemini-2.5-flash'
+[2026-06-26 18:52:02] [INFO] Planning via provider 'gemini' using model 'gemini-3.1-flash-lite'
 [2026-06-26 18:52:03] [INFO] LLM responded in 0.94s
 [2026-06-26 18:52:03] [INFO] Planner selected GET_PLAYER_STATUS
 [2026-06-26 18:52:03] [INFO] GET_PLAYER_STATUS()
