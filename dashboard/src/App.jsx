@@ -21,6 +21,12 @@ export default function App() {
   const [logsAutoRefresh, setLogsAutoRefresh] = useState(true);
   const [diagnostics, setDiagnostics] = useState(null);
 
+  // Personality Page States
+  const [personality, setPersonality] = useState('');
+  const [personalityMeta, setPersonalityMeta] = useState({ word_count: 0, char_count: 0, last_modified: '' });
+  const [personalitySaving, setPersonalitySaving] = useState(false);
+  const [personalitySaveIndicator, setPersonalitySaveIndicator] = useState('Saved'); // 'Saved' | 'Unsaved Changes' | 'Saving...'
+
   // Modal/Form States for Adding Memory
   const [showAddMem, setShowAddMem] = useState(null); // 'location', 'note', 'preference'
   const [newLoc, setNewLoc] = useState({ name: '', x: 0, y: 64, z: 0, dimension: 'minecraft:overworld', biome: 'minecraft:plains' });
@@ -63,6 +69,7 @@ export default function App() {
       fetchTools();
       fetchMemory();
       fetchLogs();
+      fetchPersonality();
     }
   }, [backendOnline]);
 
@@ -193,6 +200,70 @@ export default function App() {
       }
     } catch (err) {
       console.error('Failed to fetch memory', err);
+    }
+  };
+
+  const fetchPersonality = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/api/personality`);
+      if (res.ok) {
+        const data = await res.json();
+        setPersonality(data.content);
+        setPersonalityMeta({
+          word_count: data.word_count,
+          char_count: data.char_count,
+          last_modified: data.last_modified
+        });
+        setPersonalitySaveIndicator('Saved');
+      }
+    } catch (err) {
+      console.error('Failed to fetch personality', err);
+    }
+  };
+
+  const handleSavePersonality = async () => {
+    setPersonalitySaveIndicator('Saving...');
+    setPersonalitySaving(true);
+    try {
+      const res = await fetch(`${API_BASE}/api/personality`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ content: personality })
+      });
+      if (res.ok) {
+        showToast('Personality saved successfully!');
+        fetchPersonality();
+      } else {
+        const err = await res.json();
+        showToast(err.detail || 'Failed to save personality.', 'error');
+        setPersonalitySaveIndicator('Unsaved Changes');
+      }
+    } catch (err) {
+      console.error('Failed to save personality', err);
+      showToast('Network error while saving personality.', 'error');
+      setPersonalitySaveIndicator('Unsaved Changes');
+    } finally {
+      setPersonalitySaving(false);
+    }
+  };
+
+  const handleRestoreDefaultPersonality = async () => {
+    if (!window.confirm("Are you sure you want to restore the default personality? This will overwrite your current personality instructions.")) {
+      return;
+    }
+    try {
+      const res = await fetch(`${API_BASE}/api/personality/reset`, {
+        method: 'POST'
+      });
+      if (res.ok) {
+        showToast('Personality restored to defaults.');
+        fetchPersonality();
+      } else {
+        showToast('Failed to restore default personality.', 'error');
+      }
+    } catch (err) {
+      console.error('Failed to reset personality', err);
+      showToast('Network error while resetting personality.', 'error');
     }
   };
 
@@ -1360,6 +1431,72 @@ export default function App() {
     );
   };
 
+  const renderPersonality = () => {
+    return (
+      <div className="card" style={{ display: 'flex', flexDirection: 'column', gap: '20px', padding: '24px' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <div>
+            <h2 style={{ fontSize: '18px', margin: '0 0 4px 0', color: 'var(--text-color)' }}>Long-Term AI Personality</h2>
+            <p style={{ fontSize: '13px', color: '#888', margin: 0 }}>
+              Define the permanent instructions, tone, behavior, and personality of your companion.
+            </p>
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
+            <span style={{ 
+              fontSize: '13px', 
+              color: personalitySaveIndicator === 'Saved' ? '#4caf50' : (personalitySaveIndicator === 'Saving...' ? '#ffeb3b' : '#ff9800'),
+              fontWeight: '500'
+            }}>
+              ● {personalitySaveIndicator}
+            </span>
+            <button className="btn" disabled={personalitySaving} onClick={handleSavePersonality}>
+              {personalitySaving ? 'Saving...' : 'Save Personality'}
+            </button>
+            <button className="btn btn-secondary" onClick={handleRestoreDefaultPersonality}>
+              Restore Default
+            </button>
+          </div>
+        </div>
+
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: '16px' }}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+            <textarea
+              className="form-input"
+              style={{
+                fontFamily: 'Consolas, Monaco, "Courier New", Courier, monospace',
+                fontSize: '14px',
+                lineHeight: '1.5',
+                minHeight: '350px',
+                resize: 'vertical',
+                padding: '16px',
+                backgroundColor: 'var(--input-bg, #1a1a1a)',
+                color: 'var(--input-color, #e0e0e0)',
+                border: '1px solid var(--border-color, #333)',
+                borderRadius: '6px'
+              }}
+              placeholder="Enter personality instructions..."
+              value={personality}
+              onChange={(e) => {
+                setPersonality(e.target.value);
+                setPersonalitySaveIndicator('Unsaved Changes');
+              }}
+            />
+          </div>
+        </div>
+
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '13px', color: '#888', borderTop: '1px solid #333', paddingTop: '16px' }}>
+          <div style={{ display: 'flex', gap: '20px' }}>
+            <span>Words: <b>{personality.split(/\s+/).filter(Boolean).length}</b></span>
+            <span>Characters: <b>{personality.length}</b></span>
+          </div>
+          {personalityMeta.last_modified && (
+            <span>Last Modified: <b>{new Date(personalityMeta.last_modified).toLocaleString()}</b></span>
+          )}
+        </div>
+      </div>
+    );
+  };
+
   const renderMemory = () => {
     return (
       <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
@@ -2171,6 +2308,9 @@ export default function App() {
           <div className={`nav-item ${activeTab === 'memory' ? 'active' : ''}`} onClick={() => setActiveTab('memory')}>
             🧠 Memory Manager
           </div>
+          <div className={`nav-item ${activeTab === 'personality' ? 'active' : ''}`} onClick={() => setActiveTab('personality')}>
+            ❤️ Personality
+          </div>
           <div className={`nav-item ${activeTab === 'tools' ? 'active' : ''}`} onClick={() => setActiveTab('tools')}>
             🛠️ Tool Registry
           </div>
@@ -2202,6 +2342,7 @@ export default function App() {
               {activeTab === 'resources' && 'AI Resource Telemetry'}
               {activeTab === 'prompt_profiler' && 'Prompt Optimization Profiler'}
               {activeTab === 'memory' && 'Saved Memory Manager'}
+              {activeTab === 'personality' && 'Long-Term AI Personality'}
               {activeTab === 'tools' && 'Registered Tools Registry'}
               {activeTab === 'logs' && 'System logs & Diagnostics'}
               {activeTab === 'diagnostics' && 'Developer Diagnostics'}
@@ -2214,6 +2355,7 @@ export default function App() {
               {activeTab === 'resources' && 'Verify input/output token counts, response latency, and hourly usage.'}
               {activeTab === 'prompt_profiler' && 'Analyze LLM prompt composition, optimization statistics, and token savings.'}
               {activeTab === 'memory' && 'Directly inspect and modify locations, notes, and preference indexes.'}
+              {activeTab === 'personality' && 'Customize how the assistant behaves, speaks, and responds.'}
               {activeTab === 'tools' && 'Verify schemas, descriptions, and descriptions of registered tools.'}
               {activeTab === 'logs' && 'Realtime logs aggregated from both launcher and assistant subprocesses.'}
               {activeTab === 'diagnostics' && 'Live request tracing, pipeline stage timings, model capabilities, and exception details.'}
@@ -2240,6 +2382,7 @@ export default function App() {
         {activeTab === 'resources' && renderResources()}
         {activeTab === 'prompt_profiler' && renderPromptProfiler()}
         {activeTab === 'memory' && renderMemory()}
+        {activeTab === 'personality' && renderPersonality()}
         {activeTab === 'tools' && renderTools()}
         {activeTab === 'logs' && renderLogs()}
         {activeTab === 'diagnostics' && renderDiagnostics()}

@@ -49,6 +49,7 @@ namespace MinecraftBackendLauncher
         protected Process? ManagedProcess;
         protected DateTime SpawnTime = DateTime.MinValue;
         private bool _waitingLogTriggered = false;
+        private int _consecutiveHealthFailures = 0;
 
         protected ServiceManager(LauncherApplicationContext context, HttpClient httpClient, string serviceName)
         {
@@ -209,16 +210,32 @@ namespace MinecraftBackendLauncher
                 if (healthy)
                 {
                     LastHealthyCheckTime = DateTime.Now;
+                    _consecutiveHealthFailures = 0;
                 }
 
                 // If running managed, check if process died
                 if (State == ServiceState.RunningManaged)
                 {
-                    if (ManagedProcess == null || ManagedProcess.HasExited || !healthy)
+                    bool processDead = ManagedProcess == null || ManagedProcess.HasExited;
+                    if (!healthy && !processDead)
+                    {
+                        _consecutiveHealthFailures++;
+                        Context.LogWarning(requestId, $"{ServiceName} health check failed ({_consecutiveHealthFailures}/3).");
+                    }
+
+                    if (processDead || _consecutiveHealthFailures >= 3)
                     {
                         UnexpectedCrashes++;
                         ConsecutiveFailureCount++;
-                        Context.LogWarning(requestId, $"{ServiceName} managed process terminated or became unhealthy.");
+                        if (processDead)
+                        {
+                            Context.LogWarning(requestId, $"{ServiceName} managed process terminated.");
+                        }
+                        else
+                        {
+                            Context.LogWarning(requestId, $"{ServiceName} managed process became unhealthy consecutively {_consecutiveHealthFailures} times.");
+                        }
+                        _consecutiveHealthFailures = 0;
                         StopProcessInternal(requestId);
                         HandleFailure(minecraftRunning, requestId);
                         return;

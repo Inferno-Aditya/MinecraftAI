@@ -195,6 +195,9 @@ class ResponseGenerator:
             system_prompt, user_prompt = PromptBuilder.build_synthesis_prompt(
                 system_instructions, context_text, memory_text, message, tool_results
             )
+            if ctx:
+                ctx.generator_system_prompt = system_prompt
+                ctx.generator_user_prompt = user_prompt
 
             # Execution Verification check for Prompt builder/section generation/provider payload
             if ctx and hasattr(ctx, "execution_verification") and isinstance(ctx.execution_verification, dict):
@@ -298,6 +301,8 @@ class ResponseGenerator:
                     model_profile=self.model_profile,
                     ctx=ctx
                 )
+                if ctx:
+                    ctx.generator_raw_response = response_text
                 if ctx:
                     ctx.end_stage()
             except Exception as llm_err:

@@ -38,6 +38,8 @@ class GeminiProvider(BaseLLMProvider):
          guard that fires even if the SDK ignores or mishandles the SDK timeout.
     """
 
+    _executor = concurrent.futures.ThreadPoolExecutor(max_workers=5, thread_name_prefix="gemini-provider")
+
     def __init__(self, model_name: str = None):
         try:
             from model_manager import model_manager
@@ -114,22 +116,21 @@ class GeminiProvider(BaseLLMProvider):
 
         # Run the actual SDK call inside a thread so we can apply a hard
         # wall-clock timeout regardless of what the SDK does internally.
-        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-            future = executor.submit(self._do_generate, system_prompt, user_prompt, req_id, ctx)
-            try:
-                result = future.result(timeout=GEMINI_HARD_TIMEOUT_S)
-                return result
-            except concurrent.futures.TimeoutError:
-                future.cancel()
-                msg = (
-                    f"Gemini hard-timeout ({GEMINI_HARD_TIMEOUT_S}s) exceeded – "
-                    f"model={self.model_name}. SDK did not return within the deadline."
-                )
-                self._log("ERROR", req_id, msg)
-                self.last_request_info["status"] = "hard_timeout"
-                self.last_request_info["error"] = msg
-                self._set_ctx_failure(ctx, "PROVIDER_TIMEOUT")
-                raise TimeoutError(msg)
+        future = self._executor.submit(self._do_generate, system_prompt, user_prompt, req_id, ctx)
+        try:
+            result = future.result(timeout=GEMINI_HARD_TIMEOUT_S)
+            return result
+        except concurrent.futures.TimeoutError:
+            future.cancel()
+            msg = (
+                f"Gemini hard-timeout ({GEMINI_HARD_TIMEOUT_S}s) exceeded – "
+                f"model={self.model_name}. SDK did not return within the deadline."
+            )
+            self._log("ERROR", req_id, msg)
+            self.last_request_info["status"] = "hard_timeout"
+            self.last_request_info["error"] = msg
+            self._set_ctx_failure(ctx, "PROVIDER_TIMEOUT")
+            raise TimeoutError(msg)
 
     def _do_generate(
         self,

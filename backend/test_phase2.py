@@ -136,6 +136,21 @@ class TestPhase2(unittest.TestCase):
         self.assertEqual(x2, 500.0)
         self.assertNotEqual(x1, x2)
 
+        # Test case-insensitivity save/load
+        registry.execute("save_location", self.context, {"name": "base Alpha"})
+        res_load_lower = registry.execute("load_location", self.context, {"name": "base alpha"})
+        self.assertEqual(res_load_lower["status"], "success")
+        self.assertIn("Loaded location 'base Alpha'", res_load_lower["message"])
+
+        # Test case-insensitive overwrite
+        updated_context_alpha = self.context.model_copy(update={"x": 123.4})
+        registry.execute("save_location", updated_context_alpha, {"name": "BASE ALPHA"})
+        
+        mem3 = load_memory()
+        self.assertNotIn("base Alpha", mem3["locations"])
+        self.assertIn("BASE ALPHA", mem3["locations"])
+        self.assertEqual(mem3["locations"]["BASE ALPHA"]["x"], 123.4)
+
     def test_invalid_names_handled_gracefully(self):
         """Verify that empty, missing, or invalid names are rejected/handled gracefully."""
         # Empty/whitespace name for save_location

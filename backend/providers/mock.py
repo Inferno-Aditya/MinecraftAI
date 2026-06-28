@@ -22,7 +22,7 @@ class MockProvider(BaseLLMProvider):
             "completion_tokens": 50
         }
         # Check if the system prompt is for synthesis (ResponseGenerator)
-        if "companion" in system_prompt.lower():
+        if "companion" in system_prompt.lower() and "planning engine" not in system_prompt.lower():
             if "shield" in user_prompt.lower():
                 return json.dumps({"reply": "Yes, you can craft a shield. You have 16 oak logs which is enough for planks, but you need 1 iron ingot."})
             elif "survive the night" in user_prompt.lower():
@@ -107,7 +107,7 @@ class MockProvider(BaseLLMProvider):
                 "reply": ""
             })
         if re.search(r"where did i save my mining base|where is Home\??", msg, re.IGNORECASE):
-            name = "mining base" if "mining base" in msg.lower() else "Home"
+            name = "mining base" if "mining base" in msg.lower() else ("home" if "where is home" in msg.lower() else "Home")
             return json.dumps({
                 "response_strategy": "TOOLS",
                 "tool_calls": [{"tool": "load_location", "arguments": {"name": name}}],

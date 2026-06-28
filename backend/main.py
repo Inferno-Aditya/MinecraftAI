@@ -46,6 +46,11 @@ except ImportError:
     from .memory import load_memory, save_memory
 
 try:
+    from personality import load_personality, save_personality, restore_default_personality, get_personality_meta
+except ImportError:
+    from .personality import load_personality, save_personality, restore_default_personality, get_personality_meta
+
+try:
     from request_context import RequestContext, FailureCategory, RequestState
 except ImportError:
     from .request_context import RequestContext
@@ -54,6 +59,7 @@ from tools.base import ToolResult
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import ValidationError
+from fastapi.concurrency import run_in_threadpool
 
 # Load environment variables
 load_dotenv()
@@ -131,6 +137,7 @@ class ChatRequest(BaseModel):
     message: str
     player: PlayerContext
     memory: dict = {}
+    screenshot: str = ""
 
 class ChatResponse(BaseModel):
     reply: str
@@ -371,6 +378,25 @@ def get_tools_metadata():
             "category": category
         })
     return result
+
+class PersonalityUpdate(BaseModel):
+    content: str
+
+@app.get("/api/personality")
+def get_personality():
+    return get_personality_meta()
+
+@app.post("/api/personality")
+def update_personality(data: PersonalityUpdate):
+    success = save_personality(data.content)
+    if not success:
+        raise HTTPException(status_code=400, detail="Failed to save personality (cannot be empty)")
+    return {"status": "success"}
+
+@app.post("/api/personality/reset")
+def reset_personality_route():
+    content = restore_default_personality()
+    return {"status": "success", "content": content}
 
 @app.get("/api/memory")
 def get_all_memory():
@@ -696,11 +722,13 @@ async def chat_endpoint(request: ChatRequest):
     ctx.set_state(RequestState.QUEUED)
     log_message("INFO", f"{ctx.prefix()} Chat request received: '{message[:80]}{'...' if len(message) > 80 else ''}'")
 
+    final_reply_str = None
     try:
         reply = await asyncio.wait_for(
             _run_chat_pipeline(message, player, ctx),
             timeout=_CHAT_PIPELINE_TIMEOUT_S,
         )
+        final_reply_str = reply.reply
         return reply
     except asyncio.TimeoutError:
         # The pipeline exceeded the overall budget – finalize the context and
@@ -719,8 +747,10 @@ async def chat_endpoint(request: ChatRequest):
             f"{_CHAT_PIPELINE_TIMEOUT_S}s overall timeout. "
             f"Elapsed: {ctx.response_time_ms}ms."
         ))
+        fallback_reply = "I'm taking too long to respond right now. Please try again in a moment."
+        final_reply_str = fallback_reply
         return ChatResponse(
-            reply="I'm taking too long to respond right now. Please try again in a moment.",
+            reply=fallback_reply,
             tool_calls=[],
         )
     except Exception as unhandled:
@@ -737,10 +767,19 @@ async def chat_endpoint(request: ChatRequest):
             f"{ctx.prefix()} [UNHANDLED_EXCEPTION] Unexpected error in chat pipeline: "
             f"{type(unhandled).__name__}: {unhandled}"
         ))
+        fallback_reply = "An unexpected internal error occurred. Please try again."
+        final_reply_str = fallback_reply
         return ChatResponse(
-            reply="An unexpected internal error occurred. Please try again.",
+            reply=fallback_reply,
             tool_calls=[],
         )
+    finally:
+        try:
+            from eval_recorder import record_evaluation
+            player_dict = player.model_dump() if hasattr(player, "model_dump") else (player.dict() if hasattr(player, "dict") else {})
+            record_evaluation(ctx, player_dict, request.screenshot, final_reply_str)
+        except Exception as eval_err:
+            log_message("ERROR", f"Failed to record evaluation: {eval_err}")
 
 
 async def _run_chat_pipeline(
@@ -757,7 +796,7 @@ async def _run_chat_pipeline(
     ctx.begin_stage("pipeline:planner")
     planned_result: PlannerResult
     try:
-        planned_result = plan(message, player, ctx=ctx)
+        planned_result = await run_in_threadpool(plan, message, player, ctx=ctx)
         ctx.end_stage()
     except Exception as e:
         try:
@@ -805,7 +844,7 @@ async def _run_chat_pipeline(
             tool_start = time.time()
             tool_exc_val = None
             try:
-                result = registry.execute(tool_call.tool, player, tool_call.arguments)
+                result = await run_in_threadpool(registry.execute, tool_call.tool, player, tool_call.arguments)
                 tool_success = result.success
             except Exception as tool_exc:
                 log_message("ERROR", f"{ctx.prefix()} Tool execution exception for '{tool_call.tool}': {tool_exc}")
@@ -854,7 +893,8 @@ async def _run_chat_pipeline(
         # ── Stage 3: Response Generation ────────────────────
         ctx.set_state(RequestState.GENERATING_RESPONSE)
         ctx.begin_stage("pipeline:response_generation")
-        final_reply = generator.generate_response(
+        final_reply = await run_in_threadpool(
+            generator.generate_response,
             planned_result.response_strategy,
             message,
             player,
@@ -880,7 +920,8 @@ async def _run_chat_pipeline(
     # ── Stage 3: Conversational Response (no tools) ──────────
     ctx.set_state(RequestState.GENERATING_RESPONSE)
     ctx.begin_stage("pipeline:response_generation")
-    final_reply = generator.generate_response(
+    final_reply = await run_in_threadpool(
+        generator.generate_response,
         planned_result.response_strategy,
         message,
         player,

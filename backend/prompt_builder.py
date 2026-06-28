@@ -58,7 +58,17 @@ class PromptBuilder:
         Combines system components and user components into a system_prompt and user_prompt.
         """
         # Build System Prompt
+        try:
+            from personality import load_personality
+        except ImportError:
+            from .personality import load_personality
+            
+        personality = load_personality()
+        
         system_prompt_parts = [system_instructions]
+        if personality:
+            system_prompt_parts.append(f"Personality:\n{personality}")
+            
         if tool_definitions:
             system_prompt_parts.append(f"Available Tools:\n{tool_definitions}")
         else:
@@ -89,7 +99,18 @@ class PromptBuilder:
         """
         Combines components for the response synthesis step.
         """
-        system_prompt = system_instructions
+        try:
+            from personality import load_personality
+        except ImportError:
+            from .personality import load_personality
+            
+        personality = load_personality()
+        
+        system_prompt_parts = [system_instructions]
+        if personality:
+            system_prompt_parts.append(f"Personality:\n{personality}")
+            
+        system_prompt = "\n\n".join(system_prompt_parts)
         
         user_prompt_parts = []
         if context_text:

@@ -7,10 +7,11 @@ ENV_FILE = os.path.join(os.path.dirname(__file__), ".env")
 
 DEFAULT_CONFIG = {
     "provider": "gemini",
-    "model": "gemini-2.5-flash",
+    "model": "gemini-3.1-flash-lite",
     "temperature": 0.7,
     "max_tokens": 2048,
     "timeout": 15.0,
+    "enable_eval_recorder": True,
     "providers": {
         "gemini": {
             "rate_limits": {

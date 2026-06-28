@@ -52,9 +52,20 @@ class SaveLocationTool(BaseTool):
         Duplicates overwrite the previous entry. Invalid/empty names are handled by input schema.
         """
         name = arguments["name"].strip()
+        name_lower = name.lower()
         
         # Load memory and update location entry
         memory = load_memory()
+        
+        # Overwrite any existing entry matching case-insensitively
+        matched_key = None
+        for key in list(memory.get("locations", {}).keys()):
+            if key.lower() == name_lower:
+                matched_key = key
+                break
+                
+        if matched_key is not None:
+            del memory["locations"][matched_key]
         
         # Generate current timestamp (UTC ISO format)
         timestamp = datetime.datetime.now(datetime.timezone.utc).isoformat()

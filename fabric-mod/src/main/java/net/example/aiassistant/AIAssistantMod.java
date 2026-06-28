@@ -86,6 +86,8 @@ public class AIAssistantMod implements ModInitializer {
     private void handleAICommand(ServerPlayerEntity player, String message) {
         player.sendMessage(Text.literal("Thinking...").formatted(Formatting.GRAY), false);
 
+        String screenshotBase64 = captureScreenshotBase64();
+
         ServerWorld world = player.getServerWorld();
         BlockPos playerPos = player.getBlockPos();
 
@@ -388,6 +390,7 @@ public class AIAssistantMod implements ModInitializer {
         requestJson.addProperty("message", message);
         requestJson.add("player", playerJson);
         requestJson.add("memory", new JsonObject());
+        requestJson.addProperty("screenshot", screenshotBase64);
 
         String requestBody = gson.toJson(requestJson);
         log("REQUEST", requestBody);
@@ -408,6 +411,8 @@ public class AIAssistantMod implements ModInitializer {
             try {
                 HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
                 return response;
+            } catch (java.net.http.HttpTimeoutException e) {
+                throw new RuntimeException("TIMEOUT", e);
             } catch (IOException e) {
                 throw new RuntimeException("OFFLINE", e);
             } catch (InterruptedException e) {
@@ -442,7 +447,7 @@ public class AIAssistantMod implements ModInitializer {
             if (cause != null && "OFFLINE".equals(cause.getMessage())) {
                 log("ERROR", "AI server unavailable.");
                 player.sendMessage(Text.literal("AI server unavailable.").formatted(Formatting.RED), false);
-            } else if (cause instanceof java.net.http.HttpConnectTimeoutException || cause instanceof java.net.http.HttpTimeoutException) {
+            } else if (cause != null && "TIMEOUT".equals(cause.getMessage())) {
                 log("ERROR", "AI request timed out.");
                 player.sendMessage(Text.literal("AI request timed out.").formatted(Formatting.RED), false);
             } else {
@@ -507,6 +512,21 @@ public class AIAssistantMod implements ModInitializer {
             logPath = logDir.resolve("aiassistant.log");
         } catch (Exception e) {
             e.printStackTrace();
+        }
+    }
+
+    private static String captureScreenshotBase64() {
+        try {
+            java.awt.Robot robot = new java.awt.Robot();
+            java.awt.Rectangle screenRect = new java.awt.Rectangle(java.awt.Toolkit.getDefaultToolkit().getScreenSize());
+            java.awt.image.BufferedImage screenFullImage = robot.createScreenCapture(screenRect);
+            java.io.ByteArrayOutputStream baos = new java.io.ByteArrayOutputStream();
+            javax.imageio.ImageIO.write(screenFullImage, "png", baos);
+            byte[] imageBytes = baos.toByteArray();
+            return java.util.Base64.getEncoder().encodeToString(imageBytes);
+        } catch (Throwable t) {
+            System.err.println("[AIAssistantMod] Warning: Failed to capture screenshot: " + t.getMessage());
+            return "";
         }
     }
 

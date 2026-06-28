@@ -569,6 +569,9 @@ def plan(message: str, player_context: PlayerContext, ctx=None) -> PlannerResult
     system_prompt, user_prompt = PromptBuilder.build_planner_prompt(
         system_instructions, context_text, memory_text, tool_defs, message
     )
+    if ctx:
+        ctx.planner_system_prompt = system_prompt
+        ctx.planner_user_prompt = user_prompt
 
     # Step F: Generate Prompt Profile
     prompt_profile = PromptProfile.calculate(
@@ -597,6 +600,8 @@ def plan(message: str, player_context: PlayerContext, ctx=None) -> PlannerResult
             request_type="plan", prompt_profile=prompt_profile,
             model_profile=model_profile, ctx=ctx
         )
+        if ctx:
+            ctx.planner_raw_response = response_text
     except Exception as e:
         if ctx:
             ctx.end_stage(error=str(e))
@@ -681,6 +686,8 @@ def plan(message: str, player_context: PlayerContext, ctx=None) -> PlannerResult
                 request_type="plan", prompt_profile=prompt_profile,
                 model_profile=model_profile, ctx=ctx
             )
+            if ctx:
+                ctx.planner_raw_response = retry_response
             if ctx:
                 ctx.end_stage()
             cleaned_retry = clean_markdown_json(retry_response)

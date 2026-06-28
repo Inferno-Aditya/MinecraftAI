@@ -50,10 +50,17 @@ class LoadLocationTool(BaseTool):
         If the location does not exist in memory, returns a structured error response.
         """
         name = arguments["name"].strip()
+        name_lower = name.lower()
         
         memory = load_memory()
         
-        if name not in memory["locations"]:
+        matched_key = None
+        for key in memory.get("locations", {}).keys():
+            if key.lower() == name_lower:
+                matched_key = key
+                break
+                
+        if matched_key is None:
             return ToolResult(
                 success=False,
                 message=f"Location '{name}' is not saved.",
@@ -61,10 +68,10 @@ class LoadLocationTool(BaseTool):
                 tool_name=self.name
             )
             
-        location_entry = memory["locations"][name]
+        location_entry = memory["locations"][matched_key]
         return ToolResult(
             success=True,
-            message=f"Loaded location '{name}': coordinates are x={location_entry['x']:.1f}, y={location_entry['y']:.1f}, z={location_entry['z']:.1f} in {location_entry['dimension']}.",
+            message=f"Loaded location '{matched_key}': coordinates are x={location_entry['x']:.1f}, y={location_entry['y']:.1f}, z={location_entry['z']:.1f} in {location_entry['dimension']}.",
             data=location_entry,
             tool_name=self.name
         )

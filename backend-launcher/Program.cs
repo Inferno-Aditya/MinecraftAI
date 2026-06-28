@@ -157,7 +157,7 @@ namespace MinecraftBackendLauncher
         {
             _launcherUptimeStart = DateTime.Now;
             _cts = new CancellationTokenSource();
-            _httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(2) };
+            _httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
 
             // Initialize Configuration & Logger paths
             InitializeConfigAndPaths();
