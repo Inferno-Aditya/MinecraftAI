@@ -46,7 +46,10 @@ backend/test_out.txt
 *.png
 evals/
 backend/memory/memory.db
+backend/memory/*.db
+backend/memory/*.db-*
 backend/stats_temp_*.json
 stats_temp_*.json
 *.mp3
+
 
